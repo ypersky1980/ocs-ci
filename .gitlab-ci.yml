@@ -1,10 +1,35 @@
-image: python:3.7
+image: registry.access.redhat.com/ubi8/python-36
+
+# Private variables that must be set (and masked!) in the UI:
+#   AWS_ACCESS_KEY_ID     : The access key to use for AWS
+#   AWS_SECRET_ACCESS_KEY : The secret key to use for AWS
+#   PULL_SECRET           : The base64-encoded JSON pull secret for OpenShift/Rook
+# Variables that must be set (but not masked) in the UI:
+#   AWS_REGION            : The AWS region to use
+
+variables:
+  AWS_PROFILE: "openshift-dev"
+  AWS_DOMAIN: "devcluster.openshift.com"
+  AWS_SHARED_CREDENTIALS_FILE: "$CI_PROJECT_DIR/.aws/credentials"
+  AWS_CONFIG_FILE: "$CI_PROJECT_DIR/.aws/config"
+  CLUSTER_USER: "$GITLAB_USER_LOGIN"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
 
 before_script:
-   - pip install tox
+  - python -V
+  - pip install virtualenv
+  - virtualenv venv
+  - source venv/bin/activate
+  - pip install tox
+  - bin/functional.sh
+  - pip install -r requirements.txt
+  - python setup.py develop
 
 stages:
-   - lint and unit test
+  - lint and unit test
+  - deploy
+  - tier1
+  - teardown
 
 lint:
   stage: lint and unit test
@@ -14,4 +39,35 @@ lint:
 unit tests:
   stage: lint and unit test
   script:
-    - tox -e py37
+    - tox -e py36
+
+deploy:
+  stage: deploy
+  script:
+    - run-ci -m deployment --deploy --ocsci-conf=ocs-ci.yaml --cluster-name=$CLUSTER_USER-ocs-ci-$CI_PIPELINE_ID --cluster-path=cluster --collect-logs
+  artifacts:
+    when: always
+    paths:
+      - ocs-ci.yaml
+      - cluster/
+      - logs/*
+      - bin/oc
+
+tier1:
+  stage: tier1
+  script:
+    - run-ci -m tier1 --ocsci-conf=ocs-ci.yaml --cluster-name=$CLUSTER_USER-ocs-ci-$CI_PIPELINE_ID --cluster-path=cluster --self-contained-html --html=$CI_PROJECT_DIR/logs/report.html --collect-logs
+  artifacts:
+    when: always
+    paths:
+      - logs/*
+
+teardown:
+  stage: teardown
+  when: always
+  script:
+    - run-ci -m deployment --teardown --ocsci-conf=ocs-ci.yaml --cluster-name=$CLUSTER_USER-ocs-ci-$CI_PIPELINE_ID --cluster-path=cluster --collect-logs
+  artifacts:
+    when: always
+    paths:
+      - logs/*
