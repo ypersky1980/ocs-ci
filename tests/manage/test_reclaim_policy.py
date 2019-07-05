@@ -1,12 +1,12 @@
 import logging
 import pytest
 from ocs_ci.framework.testlib import tier1, ManageTest
-from ocs_ci.ocs.resources import pod
 from tests import helpers
 from ocs_ci.ocs import ocp
-
+from ocs_ci.ocs.resources.pod import list_ceph_images
 
 log = logging.getLogger(__name__)
+PVC = ocp.OCP(kind='PersistentVolumeClaim', namespace='openshift-storage')
 
 
 @pytest.fixture(scope='class')
@@ -27,6 +27,7 @@ def setup(self):
     """
     Setting up a secret and storage class
     """
+
     self.secret_obj = helpers.create_secret('CephBlockPool')
     self.sc_obj_retain = helpers.create_storage_class(
         interface_type='CephBlockPool', interface_name='rbd',
@@ -47,20 +48,14 @@ def teardown(self):
     assert self.secret_obj.delete()
 
 
-def list_ceph_images(pool_name='rbd'):
-    """
-    Args:
-        pool_name: (str) Name of the pool to get the ceph images
-
-    Returns: (List) of RBD images in the pool
-    """
-    ct_pod = pod.get_ceph_tools_pod()
-    return ct_pod.exec_ceph_cmd(ceph_cmd=f"rbd ls {pool_name}", format='json')
-
-
 @tier1
 @pytest.mark.usefixtures(test_fixture.__name__)
 class TestReclaimPolicy(ManageTest):
+    """
+    Automates the following test cases
+     OCS-383 - OCP_Validate Retain policy is honored
+     OCS-384 - OCP_Validate Delete policy is honored
+    """
 
     def test_reclaim_policy_retain(self):
         """
@@ -74,7 +69,9 @@ class TestReclaimPolicy(ManageTest):
         pv_namespace = pvc_obj.get()['metadata']['namespace']
         pv_obj = ocp.OCP(kind='PersistentVolume', namespace=pv_namespace)
         assert pvc_obj.delete()
-        assert pv_obj.get(pv_name)['status']['phase'] == 'Released', "Status of PV is not 'Released'"
+        pvc_obj.ocp.wait_for_delete(resource_name=pvc_obj.name)
+        assert pv_obj.get(pv_name).get('status').get('phase') == 'Released',\
+            "Status of PV is not 'Released'"
         log.info("Status of PV is Released")
         assert pvc_count + 1 == len(list_ceph_images())
         assert pv_obj.delete(resource_name=pv_name)
@@ -90,5 +87,6 @@ class TestReclaimPolicy(ManageTest):
         pv_namespace = pvc_obj.get()['metadata']['namespace']
         pv_obj = ocp.OCP(kind='PersistentVolume', namespace=pv_namespace)
         assert pvc_obj.delete()
+        pvc_obj.ocp.wait_for_delete(resource_name=pvc_obj.name)
         assert pv_name not in pv_obj.get()['items']
         # TODO: deletion of ceph rbd image, blocked by BZ#1723656
