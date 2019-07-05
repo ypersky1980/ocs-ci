@@ -70,8 +70,9 @@ class TestReclaimPolicy(ManageTest):
         pv_obj = ocp.OCP(kind='PersistentVolume', namespace=pv_namespace)
         assert pvc_obj.delete()
         pvc_obj.ocp.wait_for_delete(resource_name=pvc_obj.name)
-        assert pv_obj.get(pv_name).get('status').get('phase') == 'Released',\
-            "Status of PV is not 'Released'"
+        assert pv_obj.get(pv_name).get('status').get('phase') == 'Released', (
+            f"Status of PV {pv_obj.get(pv_name)} is not 'Released'"
+        )
         log.info("Status of PV is Released")
         assert pvc_count + 1 == len(list_ceph_images())
         assert pv_obj.delete(resource_name=pv_name)

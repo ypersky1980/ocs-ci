@@ -264,7 +264,7 @@ class OCP(object):
 
     def wait_for_delete(self, resource_name='', timeout=60, sleep=3):
         """
-        Wait for a resource to reach to a desired condition
+        Wait for a resource to be deleted
 
         Args:
             resource_name (str): The name of the resource to wait
@@ -282,7 +282,7 @@ class OCP(object):
             try:
                 self.get(resource_name=resource_name)
             except CommandFailed as ex:
-                logging.error(ex)
+                logging.info(ex)
                 return True
 
             if timeout < (time.time() - start_time):
