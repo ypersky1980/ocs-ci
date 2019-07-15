@@ -66,7 +66,7 @@ def create_resource(
     return ocs_obj
 
 
-def wait_for_resource_state(resource, state):
+def wait_for_resource_state(resource, state, timeout=60):
     """
     Wait for a resource to get to a given status
 
@@ -79,7 +79,8 @@ def wait_for_resource_state(resource, state):
     """
     try:
         resource.ocp.wait_for_resource(
-            condition=state, resource_name=resource.name
+            condition=state, resource_name=resource.name,
+            timeout=timeout
         )
     except TimeoutExpiredError:
         logger.info(f"{resource.kind} {resource.name} failed to reach {state}")
@@ -88,7 +89,10 @@ def wait_for_resource_state(resource, state):
     return True
 
 
-def create_pod(interface_type=None, pvc_name=None, desired_status=constants.STATUS_RUNNING, wait=True):
+def create_pod(
+    interface_type=None, pvc_name=None, desired_status=constants.STATUS_RUNNING, wait=True,
+    namespace=defaults.ROOK_CLUSTER_NAMESPACE
+):
     """
     Create a pod
 
@@ -98,6 +102,7 @@ def create_pod(interface_type=None, pvc_name=None, desired_status=constants.STAT
         desired_status (str): The status of the pod to wait for
         wait (bool): True for waiting for the pod to reach the desired
             status, False otherwise
+        namespace (str): The namespace for the new resource creation
 
     Returns:
         Pod: A Pod instance
@@ -116,7 +121,7 @@ def create_pod(interface_type=None, pvc_name=None, desired_status=constants.STAT
     pod_data['metadata']['name'] = create_unique_resource_name(
         f'test-{interface}', 'pod'
     )
-    pod_data['metadata']['namespace'] = defaults.ROOK_CLUSTER_NAMESPACE
+    pod_data['metadata']['namespace'] = namespace
     if pvc_name:
         pod_data['spec']['volumes'][0]['persistentVolumeClaim']['claimName'] = pvc_name
     pod_obj = pod.Pod(**pod_data)
@@ -131,13 +136,14 @@ def create_pod(interface_type=None, pvc_name=None, desired_status=constants.STAT
     return pod_obj
 
 
-def create_secret(interface_type):
+def create_secret(interface_type, namespace=defaults.ROOK_CLUSTER_NAMESPACE):
     """
     Create a secret
 
     Args:
         interface_type (str): The type of the interface
             (e.g. CephBlockPool, CephFileSystem)
+        namespace (str): The namespace for the new resource creation
 
     Returns:
         OCS: An OCS instance for the secret
@@ -162,17 +168,18 @@ def create_secret(interface_type):
     secret_data['metadata']['name'] = create_unique_resource_name(
         f'test-{interface}', 'secret'
     )
-    secret_data['metadata']['namespace'] = defaults.ROOK_CLUSTER_NAMESPACE
+    secret_data['metadata']['namespace'] = namespace
 
     return create_resource(**secret_data, wait=False)
 
 
-def create_ceph_block_pool(pool_name=None):
+def create_ceph_block_pool(pool_name=None, namespace=defaults.ROOK_CLUSTER_NAMESPACE):
     """
     Create a Ceph block pool
 
     Args:
         pool_name (str): The pool name to create
+        namespace (str): The namespace for the new resource creation
 
     Returns:
         OCS: An OCS instance for the Ceph block pool
@@ -183,7 +190,7 @@ def create_ceph_block_pool(pool_name=None):
             'test', 'cbp'
         )
     )
-    cbp_data['metadata']['namespace'] = defaults.ROOK_CLUSTER_NAMESPACE
+    cbp_data['metadata']['namespace'] = namespace
     cbp_obj = create_resource(**cbp_data, wait=False)
 
     assert verify_block_pool_exists(cbp_obj.name), (
@@ -194,7 +201,7 @@ def create_ceph_block_pool(pool_name=None):
 
 def create_storage_class(
     interface_type, interface_name, secret_name,
-    reclaim_policy='Delete', sc_name=None
+    reclaim_policy='Delete', sc_name=None, namespace=defaults.ROOK_CLUSTER_NAMESPACE
 ):
     """
     Create a storage class
@@ -207,6 +214,7 @@ def create_storage_class(
         sc_name (str): The name of storage class to create
         reclaim_policy (str): Type of reclaim policy. Defaults to 'Delete'
             (eg., 'Delete', 'Retain')
+        namespace (str): The namespace for the new resource creation
 
     Returns:
         OCS: An OCS instance for the storage class
@@ -242,7 +250,7 @@ def create_storage_class(
             f'test-{interface}', 'storageclass'
         )
     )
-    sc_data['metadata']['namespace'] = defaults.ROOK_CLUSTER_NAMESPACE
+    sc_data['metadata']['namespace'] = namespace
     sc_data['parameters'][
         'csi.storage.k8s.io/provisioner-secret-name'
     ] = secret_name
@@ -260,7 +268,10 @@ def create_storage_class(
     return create_resource(**sc_data, wait=False)
 
 
-def create_pvc(sc_name, pvc_name=None, size=None, wait=True):
+def create_pvc(
+    sc_name, pvc_name=None, size=None, namespace=defaults.ROOK_CLUSTER_NAMESPACE,
+        access_mode=None,wait=True
+):
     """
     Create a PVC
 
@@ -269,6 +280,7 @@ def create_pvc(sc_name, pvc_name=None, size=None, wait=True):
             associated with
         pvc_name (str): The name of the PVC to create
         size(str): Size of pvc to create
+        namespace (str): The namespace for the PVC creation
         wait (bool): True for wait for the VPC operation to complete, False otherwise
 
     Returns:
@@ -280,10 +292,12 @@ def create_pvc(sc_name, pvc_name=None, size=None, wait=True):
             'test', 'pvc'
         )
     )
-    pvc_data['metadata']['namespace'] = defaults.ROOK_CLUSTER_NAMESPACE
+    pvc_data['metadata']['namespace'] = namespace
     pvc_data['spec']['storageClassName'] = sc_name
     if size:
         pvc_data['spec']['resources']['requests']['storage'] = size
+    if access_mode:
+        pvc_data['spec']['accessModes'][0] = access_mode
     ocs_obj = pvc.PVC(**pvc_data)
     created_pvc = ocs_obj.create(do_reload=wait)
     assert created_pvc, f"Failed to create resource {pvc_name}"
@@ -292,6 +306,24 @@ def create_pvc(sc_name, pvc_name=None, size=None, wait=True):
         ocs_obj.reload()
 
     return ocs_obj
+
+
+def create_multiple_pvc(sc_name, number_of_pvc=1, size=None,access_mode=None ,namespace=defaults.ROOK_CLUSTER_NAMESPACE):
+    """
+    Create one or more PVC
+
+    Args:
+        sc_name (str): The name of the storage class to provision the PVCs from
+        number_of_pvc (int): Number of PVCs to be created
+        size (str): The size of the PVCs to create
+        namespace (str): The namespace for the PVCs creation
+
+    Returns:
+         list: List of PVC objects
+    """
+    return [
+        create_pvc(sc_name=sc_name, size=size, namespace=namespace, access_mode=access_mode) for _ in range(number_of_pvc)
+    ]
 
 
 def verify_block_pool_exists(pool_name):
