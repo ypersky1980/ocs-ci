@@ -21,13 +21,14 @@ before_script:
   - virtualenv venv
   - source venv/bin/activate
   - pip install tox
-  - bin/functional.sh
   - pip install -r requirements.txt
+  - ./.gitlab_ci_setup.py
   - python setup.py develop
 
 stages:
   - lint and unit test
-  - deploy
+  - deploy OCP
+  - deploy OCS
   - tier1
   - teardown
 
@@ -41,14 +42,26 @@ unit tests:
   script:
     - tox -e py36
 
-deploy:
-  stage: deploy
+deploy OCP:
+  stage: deploy OCP
   script:
-    - run-ci -m deployment --deploy --ocsci-conf=ocs-ci.yaml --cluster-name=$CLUSTER_USER-ocs-ci-$CI_PIPELINE_ID --cluster-path=cluster --collect-logs
+    - run-ci -m deployment --deploy --ocsci-conf=ocs-ci-ocp.yaml --cluster-name=$CLUSTER_USER-ocs-ci-$CI_PIPELINE_ID --cluster-path=cluster --collect-logs
   artifacts:
     when: always
     paths:
-      - ocs-ci.yaml
+      - ocs-ci-ocp.yaml
+      - cluster/
+      - logs/*
+      - bin/oc
+
+deploy OCS:
+  stage: deploy OCS
+  script:
+    - run-ci -m deployment --deploy --ocsci-conf=ocs-ci-ocs.yaml --cluster-name=$CLUSTER_USER-ocs-ci-$CI_PIPELINE_ID --cluster-path=cluster --collect-logs
+  artifacts:
+    when: always
+    paths:
+      - ocs-ci-ocs.yaml
       - cluster/
       - logs/*
       - bin/oc
@@ -56,7 +69,7 @@ deploy:
 tier1:
   stage: tier1
   script:
-    - run-ci -m tier1 --ocsci-conf=ocs-ci.yaml --cluster-name=$CLUSTER_USER-ocs-ci-$CI_PIPELINE_ID --cluster-path=cluster --self-contained-html --html=$CI_PROJECT_DIR/logs/report.html --collect-logs
+    - run-ci -m tier1 --ocsci-conf=ocs-ci-ocs.yaml --cluster-name=$CLUSTER_USER-ocs-ci-$CI_PIPELINE_ID --cluster-path=cluster --self-contained-html --html=$CI_PROJECT_DIR/logs/report.html --collect-logs
   artifacts:
     when: always
     paths:
@@ -66,7 +79,7 @@ teardown:
   stage: teardown
   when: always
   script:
-    - run-ci -m deployment --teardown --ocsci-conf=ocs-ci.yaml --cluster-name=$CLUSTER_USER-ocs-ci-$CI_PIPELINE_ID --cluster-path=cluster --collect-logs
+    - run-ci -m deployment --teardown --ocsci-conf=ocs-ci-ocs.yaml --cluster-name=$CLUSTER_USER-ocs-ci-$CI_PIPELINE_ID --cluster-path=cluster --collect-logs
   artifacts:
     when: always
     paths:
