@@ -91,7 +91,7 @@ class TestRbdBasedRwoPvc(ManageTest):
 
         pod_obj = Pod(**pod_data)
         pod_obj.create()
-        assert helpers.wait_for_resource_state(pod_obj, constants.STATUS_RUNNING)
+        helpers.wait_for_resource_state(pod_obj, constants.STATUS_RUNNING)
 
         node_pod1 = pod_obj.get()['spec']['nodeName']
 
@@ -106,7 +106,7 @@ class TestRbdBasedRwoPvc(ManageTest):
             pod_data['spec']['volumes'][0]['persistentVolumeClaim']['claimName'] = pvc_obj.name
             pod_obj2 = Pod(**pod_data)
             pod_obj2.create()
-            assert helpers.wait_for_resource_state(pod_obj2, constants.STATUS_PENDING)
+            helpers.wait_for_resource_state(pod_obj2, constants.STATUS_PENDING)
 
             node_pod2 = pod_obj2.get()['spec']['nodeName']
             if node_pod1 != node_pod2:
