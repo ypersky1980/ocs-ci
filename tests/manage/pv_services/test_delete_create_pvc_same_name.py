@@ -71,7 +71,7 @@ class TestDeleteCreatePVCSameName(ManageTest):
 
         # Check PV is Bound
         pv_obj1 = pvc_obj1.backed_pv_obj
-        assert helpers.wait_for_resource_state(
+        helpers.wait_for_resource_state(
             resource=pv_obj1, state=constants.STATUS_BOUND
         )
 
@@ -86,7 +86,7 @@ class TestDeleteCreatePVCSameName(ManageTest):
             sc_name=pvc_obj1.storageclass.name,
             pvc_name=pvc_obj1.name,
             namespace=pvc_obj1.project.namespace,
-            wait=False
+            do_reload=False
         )
         assert pvc_obj2, "Failed to create PVC"
         pvcs.append(pvc_obj2)
@@ -96,6 +96,6 @@ class TestDeleteCreatePVCSameName(ManageTest):
             resource=pvc_obj2, state=constants.STATUS_BOUND
         )
         pv_obj2 = pvc_obj2.backed_pv_obj
-        assert helpers.wait_for_resource_state(
+        helpers.wait_for_resource_state(
             resource=pv_obj2, state=constants.STATUS_BOUND
         )
