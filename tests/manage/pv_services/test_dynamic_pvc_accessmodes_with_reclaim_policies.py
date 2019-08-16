@@ -211,10 +211,10 @@ class TestRWODynamicPvc(BaseDynamicPvc):
         md5sum_pod1_data = pod.cal_md5sum(
             pod_obj=self.pod_obj1, file_name=file_name
         )
-        # Verify that second pod is still in Pending state and not able to
+        # Verify that second pod is still in ContainerCreating state and not able to
         # attain Running state due to expected failure
         helpers.wait_for_resource_state(
-            resource=pod_obj2, state=constants.STATUS_PENDING
+            resource=pod_obj2, state=constants.STATUS_CONTAINER_CREATING
         )
         self.verify_expected_failure_event(
             ocs_obj=pod_obj2, failure_str=self.expected_pod_failure
