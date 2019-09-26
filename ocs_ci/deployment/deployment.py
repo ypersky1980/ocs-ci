@@ -320,7 +320,7 @@ class Deployment(object):
             resource_count=3, timeout=600
         )
 
-        create_oc_resource(
+        apply_oc_resource(
             'toolbox.yaml', self.cluster_path, _templating,
             config.ENV_DATA,
         )
