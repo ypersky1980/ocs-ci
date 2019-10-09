@@ -1164,6 +1164,9 @@ def ceph_health_check(namespace=None):
     if health.strip() == "HEALTH_OK":
         log.info("HEALTH_OK, install successful.")
         return True
+    elif health.strip() == "HEALTH_WARN":
+        log.info("HEALTH_WARN")
+        return True
     else:
         raise CephHealthException(
             f"Ceph cluster health is not OK. Health: {health}"
