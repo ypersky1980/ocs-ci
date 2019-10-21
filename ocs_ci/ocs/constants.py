@@ -225,6 +225,11 @@ PGSQL_STATEFULSET_YAML = os.path.join(
     TEMPLATE_PGSQL_SERVER_DIR, "StatefulSet.yaml"
 )
 
+PGSQL_STATEFULSET_RAWBLOCKPVC_YAML = os.path.join(
+    TEMPLATE_PGSQL_SERVER_DIR, "StatefulSet_rawblock.yaml"
+)
+
+
 PGSQL_BENCHMARK_YAML = os.path.join(
     TEMPLATE_PGSQL_DIR, "PGSQL_Benchmark.yaml"
 )
