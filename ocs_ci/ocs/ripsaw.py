@@ -5,6 +5,8 @@ RipSaw Class to run various workloads and scale tests
 import logging
 import tempfile
 
+import os
+
 from ocs_ci.ocs.exceptions import CommandFailed
 from ocs_ci.ocs.ocp import OCP
 from ocs_ci.ocs.ocp import switch_to_default_rook_cluster_project
@@ -48,6 +50,7 @@ class RipSaw(object):
         self.ocp = OCP()
         self.ns_obj = OCP(kind='namespace')
         self.pod_obj = OCP(kind='pod')
+        self.kubeconfig = os.getenv('KUBECONFIG')
         self._create_namespace()
         self._clone_ripsaw()
 
@@ -86,11 +89,11 @@ class RipSaw(object):
         """
         self.crd = crd
         self.dir += '/ripsaw'
-        run(f'oc apply -f deploy', shell=True, check=True, cwd=self.dir)
-        run(f'oc apply -f {crd}', shell=True, check=True, cwd=self.dir)
-        run(f'oc apply -f {self.operator}', shell=True, check=True, cwd=self.dir)
+        run(f'oc --kubeconfig {self.kubeconfig} apply -f deploy ', shell=True, check=True, cwd=self.dir)
+        run(f'oc --kubeconfig {self.kubeconfig} apply -f {crd}', shell=True, check=True, cwd=self.dir)
+        run(f'oc --kubeconfig {self.kubeconfig} apply -f {self.operator}', shell=True, check=True, cwd=self.dir)
 
-    def setup_postgresql(self):
+    def setup_postgresql(self, rawblockpv=False):
         """
         Deploy postgres sql server
         """
@@ -101,9 +104,14 @@ class RipSaw(object):
             pgsql_cmap = templating.load_yaml(
                 constants.PGSQL_CONFIGMAP_YAML
             )
-            pgsql_sset = templating.load_yaml(
-                constants.PGSQL_STATEFULSET_YAML
-            )
+            if rawblockpv:
+                pgsql_sset = templating.load_yaml(
+                    constants.PGSQL_STATEFULSET_RAWBLOCKPVC_YAML
+                )
+            else:
+                pgsql_sset = templating.load_yaml(
+                    constants.PGSQL_STATEFULSET_YAML
+                )
             self.pgsql_service = OCS(**pgsql_service)
             self.pgsql_service.create()
             self.pgsql_cmap = OCS(**pgsql_cmap)
@@ -121,9 +129,9 @@ class RipSaw(object):
         self.pgsql_is_setup = True
 
     def cleanup(self):
-        run(f'oc delete -f {self.crd}', shell=True, cwd=self.dir)
-        run(f'oc delete -f {self.operator}', shell=True, cwd=self.dir)
-        run(f'oc delete -f deploy', shell=True, cwd=self.dir)
+        run(f'oc --kubeconfig {self.kubeconfig} delete -f {self.crd}', shell=True, cwd=self.dir)
+        run(f'oc --kubeconfig {self.kubeconfig} delete -f {self.operator}', shell=True, cwd=self.dir)
+        run(f'oc --kubeconfig {self.kubeconfig} delete -f deploy', shell=True, cwd=self.dir)
         run_cmd(f'oc delete project {self.namespace}')
         # Reset namespace to default
         switch_to_default_rook_cluster_project()
