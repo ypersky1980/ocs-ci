@@ -96,3 +96,7 @@ class MissingRequiredConfigKeyError(Exception):
 
 class NotSupportedFunctionError(Exception):
     pass
+
+
+class FailedToDeleteInstance(Exception):
+    pass
