@@ -108,4 +108,3 @@ class FailedToAddNodeException(Exception):
 
 class FailedToRemoveNodeException(Exception):
     pass
-
