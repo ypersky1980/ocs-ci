@@ -100,3 +100,12 @@ class NotSupportedFunctionError(Exception):
 
 class FailedToDeleteInstance(Exception):
     pass
+
+
+class FailedToAddNodeException(Exception):
+    pass
+
+
+class FailedToRemoveNodeException(Exception):
+    pass
+
