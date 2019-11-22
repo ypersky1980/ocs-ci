@@ -108,3 +108,6 @@ class FailedToAddNodeException(Exception):
 
 class FailedToRemoveNodeException(Exception):
     pass
+
+class NonUpgradedImagesFoundError(Exception):
+    pass
