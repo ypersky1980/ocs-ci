@@ -442,6 +442,8 @@ class AWSUPI(AWSBase):
         self.worker_iam_role = worker_instance.iam_instance_profile
         self.worker_tag = self.get_kube_tag(worker_instance.tags)
         del self.worker_iam_role['Id']
+
+    def get_worker_resource_id(self, resource):
         """
         Get the resource ID
 
