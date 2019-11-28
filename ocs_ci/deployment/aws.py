@@ -430,7 +430,6 @@ class AWSUPI(AWSBase):
         Gather various info like vpc, iam role, subnet,security group,
         cluster tag from existing RHCOS workers
         """
-        self.cf = boto3.client('cloudformation')
         stack_name = f'{self.cluster_name}-{suffix}'
         resource = self.cf.list_stack_resources(StackName=stack_name)
         worker_id = self.get_worker_resource_id(resource)
