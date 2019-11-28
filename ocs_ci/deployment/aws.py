@@ -425,25 +425,24 @@ class AWSUPI(AWSBase):
         if config.ENV_DATA['rhel_workers']:
             self.add_rhel_workers()
 
-    def gather_worker_data(self):
+    def gather_worker_data(self, suffix):
         """
         Gather various info like vpc, iam role, subnet,security group,
         cluster tag from existing RHCOS workers
         """
-        suffix = 'no0'
+        self.cf = boto3.client('cloudformation')
         stack_name = f'{self.cluster_name}-{suffix}'
         resource = self.cf.list_stack_resources(StackName=stack_name)
         worker_id = self.get_worker_resource_id(resource)
         ec2 = boto3.resource('ec2')
         worker_instance = ec2.Instance(worker_id)
+
         self.worker_vpc = worker_instance.vpc.id
         self.worker_subnet = worker_instance.subnet.id
         self.worker_security_group = worker_instance.security_groups
         self.worker_iam_role = worker_instance.iam_instance_profile
         self.worker_tag = self.get_kube_tag(worker_instance.tags)
         del self.worker_iam_role['Id']
-
-    def get_worker_resource_id(self, resource):
         """
         Get the resource ID
 
@@ -485,6 +484,7 @@ class AWSUPI(AWSBase):
         num_workers = int(os.environ.get('num_workers', 3))
         logging.info(f"Creating {num_workers} RHEL workers")
         for i in range(num_workers):
+            self.gather_worker_data(f'no{i}')
             logging.info(f"Creating {i + 1}/{num_workers} worker")
             response = self.client.run_instances(
                 BlockDeviceMappings=[
@@ -744,7 +744,6 @@ class AWSUPI(AWSBase):
         """
         Add RHEL worker nodes to the existing cluster
         """
-        self.gather_worker_data()
         self.create_rhel_instance()
         self.run_ansible_playbook()
 
