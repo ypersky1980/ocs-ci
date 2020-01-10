@@ -66,6 +66,7 @@ pipeline {
         source ./venv/bin/activate
         run-ci -m deployment --deploy --ocsci-conf=ocs-ci-ocp.yaml --ocsci-conf=conf/ocsci/production-aws-ipi.yaml --ocsci-conf=conf/ocsci/production_device_size.yaml --cluster-name=${env.CLUSTER_USER}-ocs-ci-${env.BUILD_ID} --cluster-path=cluster --collect-logs
         """
+        input message: "OCP is deployed. Continue?"
       }
     }
     stage("Deploy OCS") {
