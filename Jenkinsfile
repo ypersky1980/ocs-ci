@@ -8,11 +8,13 @@
 //   openshift-dev-aws-secret-access-key (AWS_SECRET_ACCESS_KEY)
 //   openshift-pull-secret (PULL_SECRET)
 //   ocs-bugzilla-cfg (BUGZILLA_CFG)
+//   quay-creds-ocs-ro (OCS_SECRET)
 // It may also provide these optional parameters to override the framework's
 // defaults:
 //   OCS_REGISTRY_IMAGE
 //   EMAIL
 //   UMB_MESSAGE
+//   STAGE_NAMESPACE
 pipeline {
   agent { node { label "ocs-ci" }}
   environment {
@@ -22,6 +24,7 @@ pipeline {
     AWS_SECRET_ACCESS_KEY = credentials('openshift-dev-aws-secret-access-key')
     PULL_SECRET = credentials('openshift-pull-secret')
     BUGZILLA_CFG = credentials('ocs-bugzilla-cfg')
+    OCS_SECRET = credentials('quay-creds-ocs-ro')
   }
   stages {
     stage("Setup") {

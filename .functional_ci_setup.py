@@ -118,6 +118,9 @@ def write_ocsci_conf():
 
     ocs_conf = get_ocsci_conf()
     ocs_conf['ENV_DATA']['skip_ocp_deployment'] = True
+    if env.get('STAGE_NAMESPACE'):
+        ocs_conf['DEPLOYMENT']['stage'] = True
+        ocs_conf['DEPLOYMENT']['stage_namespace'] = env['STAGE_NAMESPACE']
     ocs_conf_path = os.path.join(env['WORKSPACE'], 'ocs-ci-ocs.yaml')
     with open(ocs_conf_path, 'w') as ocs_conf_file:
         ocs_conf_file.write(yaml.safe_dump(ocs_conf))
