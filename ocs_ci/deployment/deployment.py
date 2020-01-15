@@ -259,8 +259,14 @@ class Deployment(object):
         # generate quay token
         credentials = {
             "user": {
-                "username": config.DEPLOYMENT["stage_quay_username"],
-                "password": config.DEPLOYMENT["stage_quay_password"],
+                "username": config.DEPLOYMENT.get(
+                    "stage_quay_username",
+                    os.environ['OCS_SECRET_USR']
+                ),
+                "password": config.DEPLOYMENT.get(
+                    "stage_quay_password",
+                    os.environ['OCS_SECRET_PSW']
+                ),
             }
         }
         token = requests.post(
