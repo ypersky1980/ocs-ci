@@ -237,6 +237,10 @@ class Deployment(object):
             catalog_source_data['spec']['image'] = (
                 f"{image}:{image_tag if image_tag else 'latest'}"
             )
+        secret_name = self.create_secret('ocs-catalogsource')
+        if secret_name is not None:
+            catalog_source_data['spec']['authorizationToken'] = dict(
+                secretName=secret_name)
         catalog_source_manifest = tempfile.NamedTemporaryFile(
             mode='w+', prefix='catalog_source_manifest', delete=False
         )
@@ -255,40 +259,10 @@ class Deployment(object):
         """
         This prepare operator source for OCS deployment from stage.
         """
-        logger.info("Adding Stage Secret")
-        # generate quay token
-        credentials = {
-            "user": {
-                "username": config.DEPLOYMENT.get(
-                    "stage_quay_username",
-                    os.environ['OCS_SECRET_USR']
-                ),
-                "password": config.DEPLOYMENT.get(
-                    "stage_quay_password",
-                    os.environ['OCS_SECRET_PSW']
-                ),
-            }
-        }
-        token = requests.post(
-            url='https://quay.io/cnr/api/v1/users/login',
-            data=json.dumps(credentials),
-            headers={'Content-Type': 'application/json'},
-        ).json()['token']
         stage_ns = config.DEPLOYMENT["stage_namespace"]
-
-        # create Secret
-        stage_os_secret = templating.load_yaml(
-            constants.STAGE_OPERATOR_SOURCE_SECRET_YAML
-        )
-        stage_os_secret['metadata']['name'] = f"secret-{stage_ns}"
-        stage_os_secret['stringData']['token'] = token
-        stage_secret_data_yaml = tempfile.NamedTemporaryFile(
-            mode='w+', prefix=f"secret-{stage_ns}", delete=False
-        )
-        templating.dump_data_to_temp_yaml(
-            stage_os_secret, stage_secret_data_yaml.name
-        )
-        run_cmd(f"oc apply -f {stage_secret_data_yaml.name}")
+        secret_name = self.create_secret(stage_ns)
+        if secret_name is None:
+            raise RuntimeError("Stage secret was not added!")
 
         logger.info("Adding Stage Operator Source")
         # create Operator Source
@@ -298,9 +272,8 @@ class Deployment(object):
         stage_os['metadata']['name'] = stage_ns
         stage_os['spec']['registryNamespace'] = stage_ns
         stage_os['spec']['displayName'] = stage_ns
-        stage_os['spec']['authorizationToken']['secretName'] = (
-            f"secret-{stage_ns}"
-        )
+        stage_os['spec']['authorizationToken']['secretName'] = secret_name
+
         stage_os_data_yaml = tempfile.NamedTemporaryFile(
             mode='w+', prefix='secret', delete=False
         )
@@ -308,6 +281,48 @@ class Deployment(object):
             stage_os, stage_os_data_yaml.name
         )
         run_cmd(f"oc apply -f {stage_os_data_yaml.name}")
+
+    def create_secret(self, suffix):
+        username = config.DEPLOYMENT.get(
+            'stage_quay_username',
+            os.environ.get('OCS_SECRET_USR')
+        )
+        password = config.DEPLOYMENT.get(
+            'stage_quay_password',
+            os.environ.get('OCS_SECRET_PSW')
+        )
+        if not (username and password):
+            logger.info("No credentials for secret; skipping")
+            return
+        logger.info("Adding secret")
+        # generate quay token
+        credentials = {
+            "user": {
+                "username": username,
+                "password": password
+            }
+        }
+        token = requests.post(
+            url='https://quay.io/cnr/api/v1/users/login',
+            data=json.dumps(credentials),
+            headers={'Content-Type': 'application/json'},
+        ).json()['token']
+
+        # create Secret
+        secret_name = f"secret-{suffix}"
+        stage_os_secret = templating.load_yaml(
+            constants.STAGE_OPERATOR_SOURCE_SECRET_YAML
+        )
+        stage_os_secret['metadata']['name'] = secret_name
+        stage_os_secret['stringData']['token'] = token
+        stage_secret_data_yaml = tempfile.NamedTemporaryFile(
+            mode='w+', prefix=secret_name, delete=False
+        )
+        templating.dump_data_to_temp_yaml(
+            stage_os_secret, stage_secret_data_yaml.name
+        )
+        run_cmd(f"oc apply -f {stage_secret_data_yaml.name}")
+        return secret_name
 
     def create_operator_catalog_source(self):
         """
