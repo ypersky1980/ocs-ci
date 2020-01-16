@@ -241,6 +241,7 @@ class Deployment(object):
         if secret_name is not None:
             catalog_source_data['spec']['authorizationToken'] = dict(
                 secretName=secret_name)
+            catalog_source_data['spec']['secrets'] = [secret_name]
         catalog_source_manifest = tempfile.NamedTemporaryFile(
             mode='w+', prefix='catalog_source_manifest', delete=False
         )
