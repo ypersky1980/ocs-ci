@@ -24,7 +24,8 @@ class TestAddNode(ManageTest):
         non_rawblock_pods = (list(set(pods) - set(rbd_rawblock_pods)))
 
         executor = ThreadPoolExecutor(max_workers=10)
-        executor.submit(tier4_helpers.cluster_fillup, non_rawblock_pods)
+        for pod in non_rawblock_pods:
+            executor.submit(tier4_helpers.cluster_fillup, pod)
         for rawblockpod in rbd_rawblock_pods:
             executor.submit(tier4_helpers.raw_block_io,rawblockpod)
 
