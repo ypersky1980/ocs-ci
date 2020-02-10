@@ -65,14 +65,14 @@ pipeline {
     }
     stage("Deploy OCP") {
       steps {
-        script {
-          def registry_image = "${env.OCS_REGISTRY_IMAGE}"
+       // script {
+       //   def registry_image = "${env.OCS_REGISTRY_IMAGE}"
           // quay.io/rhceph-dev/ocs-registry:4.2-58.e59ca0f.master -> 4.2
-          env.ocs_version = registry_tag.split('-')[0]
-        }
+       //   env.ocs_version = registry_tag.split('-')[0]
+       // }
         sh """
         source ./venv/bin/activate
-        run-ci -m deployment --deploy --ocsci-conf=conf/ocsci/ocp-${env.ocs_version}-config.yaml --ocsci-conf=ocs-ci-ocp.yaml --ocsci-conf=conf/ocsci/production-aws-ipi.yaml --ocsci-conf=conf/ocsci/production_device_size.yaml --cluster-name=${env.CLUSTER_USER}-ocsci-${env.BUILD_ID} --cluster-path=cluster --collect-logs
+        run-ci -m deployment --deploy --ocsci-conf=conf/ocsci/ocp-4.3-config.yaml --ocsci-conf=ocs-ci-ocp.yaml --ocsci-conf=conf/ocsci/production-aws-ipi.yaml --ocsci-conf=conf/ocsci/production_device_size.yaml --cluster-name=${env.CLUSTER_USER}-ocsci-${env.BUILD_ID} --cluster-path=cluster --collect-logs
         """
       }
     }
