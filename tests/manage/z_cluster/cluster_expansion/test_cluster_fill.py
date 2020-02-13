@@ -23,14 +23,20 @@ class TestAddNode(ManageTest):
         rbd_rawblock_pods =  pods[int(len(pods)/2)::]
         non_rawblock_pods = (list(set(pods) - set(rbd_rawblock_pods)))
 
-        executor = ThreadPoolExecutor(max_workers=10)
-        for pod in non_rawblock_pods:
-            executor.submit(tier4_helpers.cluster_fillup, pod)
+
+        logger.info(len(rbd_rawblock_pods))
+        logger.info(len(non_rawblock_pods))
+
+        executor = ThreadPoolExecutor(max_workers=32)
+        for non_rawblock_pod in non_rawblock_pods:
+            executor.submit(tier4_helpers.cluster_fillup, pod=non_rawblock_pod)
         for rawblockpod in rbd_rawblock_pods:
-            executor.submit(tier4_helpers.raw_block_io,rawblockpod)
+            executor.submit(tier4_helpers.raw_block_io,pod=rawblockpod)
+
 
         executor.submit(test_create_delete_pvcs,multi_pvc_factory, pod_factory, project)
         executor.submit(s3_io, mcg_obj, awscli_pod, bucket_factory)
         assert tier4_helpers.check_cluster_size(50)
         logging.info('Pass')
+
         #Todo - integrate add node and add capacity UI automation

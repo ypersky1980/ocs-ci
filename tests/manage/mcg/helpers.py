@@ -87,6 +87,19 @@ def s3_io(mcg_obj, awscli_pod, bucket_factory):
         awscli_pod (pod): A pod running the AWSCLI tools
         bucket_factory: Calling this fixture creates a new bucket(s)
     """
+
+    bucketname = bucket_factory(1)[0].name
+    logger.info(f'Writing objects to bucket')
+    downloaded_files = s3_objects(mcg_obj,awscli_pod)
+    for obj_name in downloaded_files:
+        full_object_path = f"s3://{bucketname}/{obj_name}"
+        copycommand = f"cp {obj_name} {full_object_path}"
+        assert 'Completed' in awscli_pod.exec_cmd_on_pod(
+            command=craft_s3_command(mcg_obj, copycommand), out_yaml_format=False,
+            secrets=[mcg_obj.access_key_id, mcg_obj.access_key, mcg_obj.s3_endpoint]
+        )
+
+def s3_objects(mcg_obj,awscli_pod):
     downloaded_files = []
     public_s3 = boto3.resource('s3', region_name=mcg_obj.region)
     with ThreadPoolExecutor() as p:
@@ -98,13 +111,5 @@ def s3_io(mcg_obj, awscli_pod, bucket_factory):
             )
             downloaded_files.append(obj.key)
             downloaded_files.append(obj.key)
-    bucketname = bucket_factory(1)[0].name
-    logger.info(f'Writing objects to bucket')
 
-    for obj_name in downloaded_files:
-        full_object_path = f"s3://{bucketname}/{obj_name}"
-        copycommand = f"cp {obj_name} {full_object_path}"
-        assert 'Completed' in awscli_pod.exec_cmd_on_pod(
-            command=craft_s3_command(mcg_obj, copycommand), out_yaml_format=False,
-            secrets=[mcg_obj.access_key_id, mcg_obj.access_key, mcg_obj.s3_endpoint]
-        )
+    return downloaded_files

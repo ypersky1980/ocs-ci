@@ -1446,31 +1446,6 @@ def default_storageclasses(request, teardown_factory_session):
     return scs
 
 
-def retrive_s3_objects(awscli_pod, mcg_obj):
-    """
-    Retrieve a list of all objects on the test-objects bucket and downloads them to the pod
-
-    Args:
-        awscli_pod (Pod): A pod running the AWSCLI tools
-        mcg_obj (MCG): An MCG object containing the MCG S3 connection credentials
-
-    Returns:
-        list: A list of retrieved objects
-
-    """
-    downloaded_files = []
-    public_s3 = boto3.resource('s3', region_name=mcg_obj.region)
-    with ThreadPoolExecutor() as p:
-        for obj in public_s3.Bucket(constants.TEST_FILES_BUCKET).objects.all():
-            # Download test object(s)
-            log.info(f'Downloading {obj.key}')
-            p.submit(awscli_pod.exec_cmd_on_pod,
-                command=f'wget https://{constants.TEST_FILES_BUCKET}.s3.{mcg_obj.region}.amazonaws.com/{obj.key}'
-            )
-            downloaded_files.append(obj.key)
-    return downloaded_files
-
-
 @pytest.fixture()
 def bucket_factory(request, mcg_obj):
     """
