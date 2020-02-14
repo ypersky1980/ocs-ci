@@ -500,6 +500,12 @@ class CephCluster(object):
     def disable_health_monitor(self):
         self.health_monitor_enabled = False
 
+    def get_used_space(self,ct_pod):
+        #ct_pod = pod.get_ceph_tools_pod()
+        output = ct_pod.exec_ceph_cmd(ceph_cmd='rados df')
+        total_used = float(output.get('total_used') / 10 ** 9)
+        total_avail = float(output.get('total_avail') / 10 ** 9)
+        return 100.0 * total_used / total_avail
 
 class HealthMonitorThread(threading.Thread):
     """
