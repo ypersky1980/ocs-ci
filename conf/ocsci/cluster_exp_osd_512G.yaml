@@ -1,0 +1,5 @@
+---
+ENV_DATA:
+  osd: '512G'
+  pvc_num: 10
+  pvc_size: 50
