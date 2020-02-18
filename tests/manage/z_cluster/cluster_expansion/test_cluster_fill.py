@@ -32,6 +32,8 @@ class TestAddNode(ManageTest):
             if pod.pvc.get_pvc_access_mode == constants.ACCESS_MODE_RWX:
                 if 'rbd' in pod.name:
                     executor.submit(tier4_helpers.raw_block_io, pod=pod)
+                else:
+                    executor.submit(tier4_helpers.cluster_fillup, pod=pod, osd_size=osd_size)
             else:
                 executor.submit(tier4_helpers.cluster_fillup,pod=pod,osd_size=osd_size)
 
@@ -39,4 +41,4 @@ class TestAddNode(ManageTest):
         executor.submit(s3_io, mcg_obj, awscli_pod, bucket_factory)
         assert tier4_helpers.check_cluster_size(50)
         logging.info('Pass')
-        # #Todo - integrate add node and add capacity UI automation
+        # Todo - integrate add node and add capacity UI automation
