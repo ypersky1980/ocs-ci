@@ -824,8 +824,8 @@ def health_checker(request):
                     return
             except CephHealthException:
                 # skip because ceph is not in good health
-                pytest.skip("Ceph Health check failed")
-
+                pass
+            #    pytest.skip("Ceph Health check failed")
 
 @pytest.fixture(scope="session", autouse=True)
 def cluster(request, log_cli_level):
@@ -1446,6 +1446,32 @@ def default_storageclasses(request, teardown_factory_session):
     return scs
 
 
+
+def retrive_s3_objects(awscli_pod, mcg_obj):
+    """
+    Retrieve a list of all objects on the test-objects bucket and downloads them to the pod
+
+    Args:
+        awscli_pod (Pod): A pod running the AWSCLI tools
+        mcg_obj (MCG): An MCG object containing the MCG S3 connection credentials
+
+    Returns:
+        list: A list of retrieved objects
+
+    """
+    downloaded_files = []
+    public_s3 = boto3.resource('s3', region_name=mcg_obj.region)
+    with ThreadPoolExecutor() as p:
+        for obj in public_s3.Bucket(constants.TEST_FILES_BUCKET).objects.all():
+            # Download test object(s)
+            log.info(f'Downloading {obj.key}')
+            p.submit(awscli_pod.exec_cmd_on_pod,
+                command=f'wget https://{constants.TEST_FILES_BUCKET}.s3.{mcg_obj.region}.amazonaws.com/{obj.key}'
+            )
+            downloaded_files.append(obj.key)
+    return downloaded_files
+
+
 @pytest.fixture()
 def bucket_factory(request, mcg_obj):
     """
@@ -1506,61 +1532,56 @@ def bucket_factory(request, mcg_obj):
 
     return _create_buckets
 
+
 @pytest.fixture()
-def multi_dc_pod(multi_pvc_factory,dc_pod_factory,service_account_factory):
+def multi_dc_pod(multi_pvc_factory, dc_pod_factory, service_account_factory):
     """
     Prepare multiple dc pods for the test
     Returns:
         list: Pod instances
     """
 
-    def factory(num_of_pvcs=10,pvc_size=200,project=None):
-        pvc_objs_rbd = multi_pvc_factory(
-            interface=constants.CEPHBLOCKPOOL,
-            access_modes=[
-                'ReadWriteOnce',
-                'ReadWriteMany-Block'],
+    def factory(num_of_pvcs=1, pvc_size=100, project=None, access_mode="RWO", pool_type="rbd"):
+
+        dict_modes = {"RWO": "ReadWriteOnce", "RWX": "ReadWriteMany", "RWX-BLK": "ReadWriteMany-Block"}
+        dict_types = {"rbd": "CephBlockPool", "cephfs": "CephFileSystem"}
+
+        if access_mode in "RWX-BLK" and pool_type in "rbd":
+            modes = dict_modes["RWX-BLK"]
+            create_rbd_block_rwx_pod = True
+        else:
+            modes = dict_modes[access_mode]
+            create_rbd_block_rwx_pod = False
+
+        pvc_objs = multi_pvc_factory(
+            interface=dict_types[pool_type],
+            access_modes=[modes],
             size=pvc_size,
             num_of_pvc=num_of_pvcs,
             project=project)
-        pvc_objs_rbd_rawblock = pvc_objs_rbd[int(len(pvc_objs_rbd)/2)::]
-        pvc_objs_rbd = (list(set(pvc_objs_rbd) - set(pvc_objs_rbd_rawblock)))
 
-        pvc_objs_cephfs = multi_pvc_factory(
-            project= project,
-            interface=constants.CEPHFILESYSTEM,
-            access_modes=[
-                'ReadWriteOnce',
-                'ReadWriteMany'],
-            size=pvc_size,
-            num_of_pvc=num_of_pvcs)
+        logging.info(f" ############### PVCs =========== {[pvc_objs]}")
 
         dc_pods = []
         dc_pods_res = []
         sa_obj = service_account_factory(project=project)
         with ThreadPoolExecutor() as p:
-            for pvc in pvc_objs_rbd:
-                dc_pods_res.append(
-                    p.submit(
-                        dc_pod_factory,interface=constants.CEPHBLOCKPOOL,
-                        pvc=pvc,sa_obj=sa_obj
-                    ))
-        with ThreadPoolExecutor() as p:
-            for pvc in pvc_objs_rbd_rawblock:
-                dc_pods_res.append(
-                    p.submit(
-                        dc_pod_factory,interface=constants.CEPHBLOCKPOOL,
-                        pvc=pvc,raw_block_pv=True,sa_obj=sa_obj
-                    ))
-        with ThreadPoolExecutor() as p:
-            for pvc in pvc_objs_cephfs:
-                dc_pods_res.append(p.submit(
-                    dc_pod_factory, interface=constants.CEPHFILESYSTEM,
-                    pvc=pvc,sa_obj=sa_obj))
+            for pvc in pvc_objs:
+                if create_rbd_block_rwx_pod:
+                    dc_pods_res.append(
+                        p.submit(
+                            dc_pod_factory, interface=constants.CEPHBLOCKPOOL,
+                            pvc=pvc, raw_block_pv=True, sa_obj=sa_obj
+                        ))
+                else:
+                    dc_pods_res.append(
+                        p.submit(
+                            dc_pod_factory, interface=dict_types[pool_type],
+                            pvc=pvc, sa_obj=sa_obj
+                        ))
 
         for dc in dc_pods_res:
-             dc_pods.append(dc.result())
-
+            dc_pods.append(dc.result())
 
         with ThreadPoolExecutor() as p:
             for dc in dc_pods:
