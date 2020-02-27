@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 import random
 from math import floor
+from concurrent.futures.thread import ThreadPoolExecutor
 
 from ocs_ci.utility.utils import TimeoutSampler, get_rook_repo
 from ocs_ci.ocs.exceptions import TimeoutExpiredError, CephHealthException
@@ -30,7 +31,8 @@ from ocs_ci.ocs import constants, ocp, defaults, node, platform_nodes
 from ocs_ci.ocs.resources.mcg import MCG
 from ocs_ci.ocs.resources.ocs import OCS
 from ocs_ci.ocs.resources.pvc import PVC
-
+from ocs_ci.ocs.resources.mcg_bucket import S3Bucket, OCBucket, CLIBucket
+from tests.helpers import create_unique_resource_name
 
 log = logging.getLogger(__name__)
 
@@ -1476,3 +1478,132 @@ def default_storageclasses(request, teardown_factory_session):
         teardown_factory_session(sc)
         scs[constants.RECLAIM_POLICY_RETAIN].append(sc)
     return scs
+
+
+@pytest.fixture()
+def bucket_factory(request, mcg_obj):
+    """
+    Create a bucket factory. Calling this fixture creates a new bucket(s).
+    For a custom amount, provide the 'amount' parameter.
+
+    Args:
+        mcg_obj (MCG): An MCG object containing the MCG S3 connection credentials
+    """
+    created_buckets = []
+
+    bucketMap = {
+        's3': S3Bucket,
+        'oc': OCBucket,
+        'cli': CLIBucket
+    }
+
+    def _create_buckets(amount=1, interface='S3', *args, **kwargs):
+        """
+        Creates and deletes all buckets that were created as part of the test
+
+        Args:
+            amount (int): The amount of buckets to create
+            interface (str): The interface to use for creation of buckets. S3 | OC | CLI
+
+        Returns:
+            list: A list of s3.Bucket objects, containing all the created buckets
+
+        """
+        if interface.lower() not in bucketMap:
+            raise RuntimeError(
+                f'Invalid interface type received: {interface}. '
+                f'available types: {", ".join(bucketMap.keys())}'
+            )
+        for i in range(amount):
+            bucket_name = create_unique_resource_name(
+                resource_description='bucket', resource_type=interface.lower()
+            )
+            created_buckets.append(
+                bucketMap[interface.lower()](mcg_obj, bucket_name, *args, **kwargs)
+            )
+        return created_buckets
+
+    def bucket_cleanup():
+        all_existing_buckets = mcg_obj.s3_get_all_bucket_names()
+        for bucket in created_buckets:
+            if bucket.name in all_existing_buckets:
+                log.info(f'Cleaning up bucket {bucket.name}')
+                bucket.delete()
+                log.info(
+                    f"Verifying whether bucket: {bucket.name} exists after deletion"
+                )
+                assert not mcg_obj.s3_verify_bucket_exists(bucket.name)
+            else:
+                log.info(f'Bucket {bucket.name} not found.')
+
+    request.addfinalizer(bucket_cleanup)
+
+    return _create_buckets
+
+@pytest.fixture()
+def multi_dc_pod(multi_pvc_factory,dc_pod_factory,service_account_factory):
+    """
+    Prepare multiple dc pods for the test
+    Returns:
+        list: Pod instances
+    """
+
+    def factory(num_of_pvcs=1,pvc_size=100,project=None, access_mode="RWO", pool_type="rbd"):
+
+        dict_modes = {"RWO": "ReadWriteOnce", "RWX": "ReadWriteMany", "RWX-BLK": "ReadWriteMany-Block"}
+        dict_types = {"rbd": "CephBlockPool", "cephfs": "CephFileSystem"}
+
+        if access_mode in "RWX-BLK" and pool_type in "rbd":
+            modes = dict_modes["RWX-BLK"]
+            create_rbd_block_rwx_pod = True
+        else:
+            modes = dict_modes[access_mode]
+            create_rbd_block_rwx_pod = False
+
+        pvc_objs = multi_pvc_factory(
+            interface=dict_types[pool_type],
+            access_modes=[modes],
+            size=pvc_size,
+            num_of_pvc=num_of_pvcs,
+            project=project)
+
+        logging.info(f" ############### PVCs =========== {[pvc_objs]}")
+
+        dc_pods = []
+        dc_pods_res = []
+        sa_obj = service_account_factory(project=project)
+        with ThreadPoolExecutor() as p:
+            for pvc in pvc_objs:
+                if create_rbd_block_rwx_pod:
+                    dc_pods_res.append(
+                        p.submit(
+                            dc_pod_factory, interface=constants.CEPHBLOCKPOOL,
+                            pvc=pvc, raw_block_pv=True, sa_obj=sa_obj
+                        ))
+                else:
+                    dc_pods_res.append(
+                        p.submit(
+                            dc_pod_factory,interface=dict_types[pool_type],
+                            pvc=pvc,sa_obj=sa_obj
+                        ))
+
+        for dc in dc_pods_res:
+            pod_obj = dc.result()
+            if create_rbd_block_rwx_pod:
+                logging.info(f"#### setting attribute pod_type since create_rbd_block_rwx_pod = {create_rbd_block_rwx_pod}")
+                setattr(pod_obj, 'pod_type', 'rbd_block_rwx')
+            else:
+                setattr(pod_obj, 'pod_type', '')
+            dc_pods.append(pod_obj)
+
+        with ThreadPoolExecutor() as p:
+            for dc in dc_pods:
+                p.submit(
+                    helpers.wait_for_resource_state,
+                    resource=dc,
+                    state=constants.STATUS_RUNNING,
+                    timeout=120)
+
+        return dc_pods
+
+    return factory

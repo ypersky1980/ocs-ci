@@ -118,3 +118,44 @@ def write_individual_s3_objects(mcg_obj, awscli_pod, bucket_factory, downloaded_
             command=craft_s3_command(mcg_obj, copycommand), out_yaml_format=False,
             secrets=[mcg_obj.access_key_id, mcg_obj.access_key, mcg_obj.s3_endpoint]
         )
+
+
+def s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory):
+    """
+    Running IOs on s3 bucket
+    Args:
+        mcg_obj (obj): An MCG object containing the MCG S3 connection credentials
+        awscli_pod (pod): A pod running the AWSCLI tools
+        bucket_factory: Calling this fixture creates a new bucket(s)
+    """
+    iteration = 1
+    while True:
+        logger.info(f"########## Starting iteration : {iteration}")
+        downloaded_files = []
+        public_s3 = boto3.resource('s3', region_name=mcg_obj.region)
+        with ThreadPoolExecutor() as p:
+            for obj in public_s3.Bucket(constants.TEST_FILES_BUCKET).objects.all():
+                # Download test object(s)
+                logger.info(f'Downloading {obj.key}')
+                p.submit(awscli_pod.exec_cmd_on_pod,
+                         command=f'wget https://{constants.TEST_FILES_BUCKET}.s3.{mcg_obj.region}.amazonaws.com/{obj.key}'
+                         )
+                downloaded_files.append(obj.key)
+                downloaded_files.append(obj.key)
+        bucketname = bucket_factory(1)[0].name
+        logger.info(f'Writing objects to bucket')
+
+        for obj_name in downloaded_files:
+            full_object_path = f"s3://{bucketname}/{obj_name}"
+            copycommand = f"cp {obj_name} {full_object_path}"
+            assert 'Completed' in awscli_pod.exec_cmd_on_pod(
+                command=craft_s3_command(mcg_obj, copycommand), out_yaml_format=False,
+                secrets=[mcg_obj.access_key_id, mcg_obj.access_key, mcg_obj.s3_endpoint]
+            )
+
+        for uploaded_filename in downloaded_files:
+            logger.info(f'Deleting object {uploaded_filename}')
+            awscli_pod.exec_cmd_on_pod(
+                command=craft_s3_command(mcg_obj, "rm " + uploaded_filename),
+                secrets=[mcg_obj.access_key_id, mcg_obj.access_key, mcg_obj.s3_endpoint]
+            )
