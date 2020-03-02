@@ -94,17 +94,13 @@ def exit_criteria_check_ocp_workloads():
     return check_ocp_workloads()
 
 
-def junk1():
-    logging.info("in junk1")
-    executor = ThreadPoolExecutor(max_workers=32)
-    executor.submit(junk2)
-    from time import sleep
-    for i in range(50):
-        logging.info(f"iteration = {i}")
-        sleep(4)
+def get_used_capacity_percentage():
+    ceph_obj = CephCluster()
+    # from ocs_ci.ocs.resources import pod
+    ct_pod = pod.get_ceph_tools_pod()
+    output = ct_pod.exec_ceph_cmd(ceph_cmd='rados df')
+    logging.info(f"***** {output} ")
 
-def junk2():
-    logging.info("in junk2")
 
 @ignore_leftovers
 @tier4
@@ -112,6 +108,7 @@ class TestTier4Framework(ManageTest):
     def test_tier4_framework(self, project_factory, multi_dc_pod, multi_pvc_factory, pod_factory,
                                             mcg_obj, awscli_pod, bucket_factory):
 
+        # get_used_capacity_percentage()
         # ############# ENTRY CRITERIA ##############
         # Prepare initial configuration : cluster filling, loop for creating & deleting of PVCs and Pods, noobaa IOs
 
@@ -119,41 +116,51 @@ class TestTier4Framework(ManageTest):
         project = project_factory()
         logging.info("#1: Namespace created...")
 
-        """
         # #2. Fill up the cluster to the given percentage
         # get the number of pods and iterations to run to fill the cluster for a given %age fill factor
-        cluster_pods_to_create, cluster_fill_iterations = tier4_helpers.cluster_fill_get_pod_iter("37")
+        # cluster_pods_to_create, cluster_fill_iterations = tier4_helpers.cluster_fill_get_pod_iter("37")
 
-        num_of_pvcs = int(cluster_pods_to_create/3)
-        logging.info(f"1. number of pvcs to create = {num_of_pvcs}")
+        # num_of_pvcs = int(cluster_pods_to_create/3)
+        # logging.info(f"1. number of pvcs to create = {num_of_pvcs}")
 
         # Create DC pods. These pods will be used to fill the cluster. Once the cluster is filled to the required
         # level, the test will begin while IOs in these pods continue till the end of the test.
-        rwo_rbd_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=200,
+
+        num_of_pvcs = 8
+        rwo_rbd_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
                                     project=project, access_mode="RWO", pool_type='rbd')
-        rwo_cephfs_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=200,
+
+        rwo_cephfs_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
                                        project=project, access_mode="RWO", pool_type='cephfs')
-        rwx_cephfs_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=200,#
+        rwx_cephfs_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
                                        project=project, access_mode="RWX", pool_type='cephfs')
-
-        pods = rwo_rbd_pods + rwo_cephfs_pods + rwx_cephfs_pods
+        cluster_fill_io_pods = rwo_rbd_pods + rwo_cephfs_pods + rwx_cephfs_pods
         logging.info("#2: The DC pods are up. Running IOs from them to fill the cluster")
-        logging.info(f"Will be running IOs from these pods = {pods}")
+        logging.info(f"Will be running IOs from these pods = {cluster_fill_io_pods}")
         logging.info("###########################################################################################")
-
         jobs = []
         with ThreadPoolExecutor() as executor:
-            for p in pods:
+            for p in cluster_fill_io_pods:
                 logging.info(f"calling fillup fn from {p.name}")
-                jobs.append(executor.submit(tier4_helpers.cluster_fillup, p, cluster_fill_iterations))
+                jobs.append(executor.submit(tier4_helpers.cluster_fillup, p, 26))
+                #tier4_helpers.cluster_fillup( p, 30)
+
+        from time import sleep
+        for j in jobs:
+            while not (j.done()):
+                logging.info(f"### job {j} not complete. sleeping....")
+                sleep(15)
+            logging.info(f"#### Result of the job {j} is = {j.done()}")
+            if not j.done():
+                logging.error(f"#### Data integrity check failure. Test failed.")
+                exit(1)
 
         """
         # #3. Check for entry criteria on Logging, monitoring and registry
         # monitoring_pods_restarts_count = entry_criteria_check_configure_ocp_workloads()
 
         # #4. Start running the operations like PVC and Pod create and delete in background
-        executor = ThreadPoolExecutor(max_workers=32)
-        """
+        # executor = ThreadPoolExecutor(max_workers=32)
         status_create_delete_pvc_pods = executor.submit(test_create_delete_pvcs,multi_pvc_factory, pod_factory, project)
         from time import sleep
         while not (status_create_delete_pvc_pods.done()):
@@ -170,28 +177,26 @@ class TestTier4Framework(ManageTest):
             logging.info("############## Not completed. sleeping....")
         """
 
-        # #5a. Start running copy operations from some pods
-        # create n pods - rwo, rwx, rwx-block rbd, cephfs
-        num_pvcs = 1
-        pods_ios_rwx_rbd = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
-                                       project=project, access_mode="RWX-BLK", pool_type='rbd')
-        pods_ios_rwo_rbd = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
-                                        project=project, access_mode="RWO", pool_type='rbd')
-        pods_ios_rwo_cephfs = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
-                                           project=project, access_mode="RWO", pool_type='cephfs')
-        pods_ios_rwx_cephfs = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
-                                           project=project, access_mode="RWX", pool_type='cephfs')
-        pods = pods_ios_rwx_rbd + pods_ios_rwo_rbd # + pods_ios_rwo_cephfs + pods_ios_rwx_cephfs
+        # #5a. Start running copy operations
+        #     Create rwx-rbd pods
+        pods_ios_rwx_rbd = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
+                                        project=project, access_mode="RWX-BLK", pool_type='rbd')
+        #     append these pods to the cluster_fill_io_pods
+        #     Note: we want cluster_fill_io_pods to have its elements in random order. Try this out
+        cluster_fill_io_pods = cluster_fill_io_pods + pods_ios_rwx_rbd
         jobs = []
         jobs_rbd_rwx = []
-        with ThreadPoolExecutor(max_workers=(num_pvcs * 3)) as executor:
-            for p in pods:
+
+        with ThreadPoolExecutor(max_workers=(num_of_pvcs * 3)) as executor:
+            for p in cluster_fill_io_pods:
                 logging.info(f"calling cluster_copy_ops for {p.name}")
                 if p.pod_type == "rbd_block_rwx":
                     jobs_rbd_rwx.append(executor.submit(tier4_helpers.raw_block_io, p))
                 else:
-                    jobs.append(executor.submit(tier4_helpers.cluster_copy_ops, p, iterations=1))
+                    jobs.append(executor.submit(tier4_helpers.cluster_copy_ops, p, iterations=2))
 
+        """
+        # This is not needed as cluster_copy_ops itself asserts if there data integrity violation
         from time import sleep
         for j in jobs:
             while not (j.done()):
@@ -201,6 +206,7 @@ class TestTier4Framework(ManageTest):
             if not j.done():
                 logging.error(f"#### Data integrity check failure. Test failed.")
                 exit(1)
+        """
         """
         with ThreadPoolExecutor(max_workers=num_pvcs) as executor:
             for p in pods_ios_rwx_rbd:
@@ -219,4 +225,16 @@ class TestTier4Framework(ManageTest):
         # #8. All the existing OSDs are of size 2TiB(from 4.3 this is configurable)
         # #12. Expand the cluster
 
-
+        """
+        num_pvcs = 1
+        pods_ios_rwo_rbd = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
+                                        project=project, access_mode="RWO", pool_type='rbd')
+        pods_ios_rwo_cephfs = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
+                                           project=project, access_mode="RWO", pool_type='cephfs')
+        pods_ios_rwx_cephfs = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
+                                           project=project, access_mode="RWX", pool_type='cephfs')
+        pods_ios_rwx_rbd = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
+                                       project=project, access_mode="RWX-BLK", pool_type='rbd')
+        # pods = pods_ios_rwo_rbd # + pods_ios_rwo_cephfs + pods_ios_rwx_cephfs
+        pods = pods_ios_rwx_rbd + pods_ios_rwo_rbd  + pods_ios_rwo_cephfs + pods_ios_rwx_cephfs
+        """
