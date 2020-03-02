@@ -1,13 +1,17 @@
 import logging
 import os
 import tempfile
+from concurrent.futures.thread import ThreadPoolExecutor
 
 import pytest
 import threading
 from datetime import datetime
 import random
 from math import floor
-from concurrent.futures.thread import ThreadPoolExecutor
+from ocs_ci.ocs.resources.mcg_bucket import S3Bucket, OCBucket, CLIBucket
+
+from botocore.exceptions import ClientError
+import boto3
 
 from ocs_ci.utility.utils import TimeoutSampler, get_rook_repo
 from ocs_ci.ocs.exceptions import TimeoutExpiredError, CephHealthException
@@ -536,6 +540,7 @@ def pvc_factory_fixture(
         """
         pv_objs = []
 
+        logging.info("IN Finalizer of pvc_factory. Deleting PVCs....")
         # Get PV form PVC instances and delete PVCs
         for instance in instances:
             if not instance.is_deleted:
@@ -781,8 +786,10 @@ def dc_pod_factory(
         service_account=None,
         size=None,
         custom_data=None,
-        node_name=None,
         replica_count=1,
+        raw_block_pv=False,
+        sa_obj=None,
+        wait=True
     ):
         """
         Args:
@@ -795,7 +802,6 @@ def dc_pod_factory(
             custom_data (dict): If provided then Pod object is created
                 by using these data. Parameter `pvc` is not used but reference
                 is set if provided.
-            node_name (str): The name of specific node to schedule the pod
             replica_count (int): Replica count for deployment config
         """
         if custom_data:
@@ -803,17 +809,18 @@ def dc_pod_factory(
         else:
 
             pvc = pvc or pvc_factory(interface=interface, size=size)
-            sa_obj = service_account_factory(project=pvc.project, service_account=service_account)
+            sa_obj = sa_obj or service_account_factory(project=pvc.project, service_account=service_account)
             dc_pod_obj = helpers.create_pod(
                 interface_type=interface, pvc_name=pvc.name, do_reload=False,
                 namespace=pvc.namespace, sa_name=sa_obj.name, dc_deployment=True,
-                replica_count=replica_count, node_name=node_name
+                replica_count=replica_count,raw_block_pv=raw_block_pv
             )
         instances.append(dc_pod_obj)
         log.info(dc_pod_obj.name)
-        helpers.wait_for_resource_state(
-            dc_pod_obj, constants.STATUS_RUNNING, timeout=180
-        )
+        if wait:
+            helpers.wait_for_resource_state(
+                dc_pod_obj, constants.STATUS_RUNNING, timeout=180
+            )
         dc_pod_obj.pvc = pvc
         return dc_pod_obj
 
@@ -867,7 +874,8 @@ def health_checker(request):
                     return
             except CephHealthException:
                 # skip because ceph is not in good health
-                pytest.skip("Ceph Health check failed")
+                pass
+                # pytest.skip("Ceph Health check failed")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -896,7 +904,7 @@ def cluster(request, log_cli_level):
         config.RUN['cli_params'].get('deploy')
         and config.DEPLOYMENT['force_download_client']
     )
-    get_openshift_client(force_download=force_download)
+    # get_openshift_client(force_download=force_download)
 
     if deploy:
         # Deploy cluster
