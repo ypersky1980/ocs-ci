@@ -1,4 +1,5 @@
 import logging
+from time import sleep
 from ocs_ci.ocs import constants
 from ocs_ci.ocs.ocp import OCP
 from ocs_ci.ocs import defaults
@@ -11,11 +12,11 @@ from ocs_ci.ocs import constants
 from tests.manage.z_cluster.cluster_expansion.create_delete_pvc_parallel import test_create_delete_pvcs
 from tests.manage.mcg.helpers import s3_io_create_delete
 from ocs_ci.utility import deployment_openshift_logging as ocp_logging_obj
+from ocs_ci.ocs import node
 
 import pytest
 from ocs_ci.framework import config
 from multiprocessing import Process
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 from tests import helpers
@@ -44,6 +45,21 @@ def get_pod_restarts_count(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
     return restart_dict
 
 
+def check_nodes_status(iterations=10):
+    """
+    This function runs in a loop to check the status of nodes. If the node(s) are in NotReady state then an
+    exception is raised. Note: this function needs to be run as a background thread during the execution of a test
+
+    :return: Nothing
+    """
+    for i in range(iterations):
+        node.wait_for_nodes_status(node_names=None, status=constants.NODE_READY, timeout=5)
+        logging.info("All master and worker nodes are in Ready state.")
+        #sleep(100)
+
+
+
+
 def check_pods_in_running_state(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
     """
     checks whether all the pods in a given namespace are in running state or not
@@ -65,7 +81,9 @@ def check_pods_in_running_state(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
 
 def check_ocp_workloads():
 
-    # get a count of the restarts for each of the pods in the monitoring
+    # get a count of the restarts for each of the pods in the monitoring.
+    # We will collect this count before the test and after the test and compare them. If there is a diff then test is
+    # a failure. During the test, restart of monitoring pods is unexpected.
     restarts_count = get_pod_restarts_count(defaults.OCS_MONITORING_NAMESPACE)
 
     # check if all pods in monitoring namespace are in Running state or not
@@ -93,40 +111,32 @@ def entry_criteria_check_configure_ocp_workloads():
 def exit_criteria_check_ocp_workloads():
     return check_ocp_workloads()
 
-
-def get_used_capacity_percentage():
-    ceph_obj = CephCluster()
-    # from ocs_ci.ocs.resources import pod
-    ct_pod = pod.get_ceph_tools_pod()
-    output = ct_pod.exec_ceph_cmd(ceph_cmd='rados df')
-    logging.info(f"***** {output} ")
-
-
 @ignore_leftovers
 @tier4
 class TestTier4Framework(ManageTest):
     def test_tier4_framework(self, project_factory, multi_dc_pod, multi_pvc_factory, pod_factory,
                                             mcg_obj, awscli_pod, bucket_factory):
 
-        # get_used_capacity_percentage()
         # ############# ENTRY CRITERIA ##############
-        # Prepare initial configuration : cluster filling, loop for creating & deleting of PVCs and Pods, noobaa IOs
+        # Prepare initial configuration : logging, cluster filling, loop for creating & deleting of PVCs and Pods,
+        # noobaa IOs etc.,
 
-        # #1. Create the namespace under which this test will execute
+        # Perform Health checks:
+        # Make sure PGs are in active+clean state
+        # assert CephCluster().is_health_ok() == True, "All PGs are not in Active + Clean state."
+
+        # Check for entry criteria on Logging, monitoring and registry:
+        # monitoring_pods_restarts_count = entry_criteria_check_configure_ocp_workloads()
+
+        # Create the namespace under which this test will executeq:
         project = project_factory()
         logging.info("#1: Namespace created...")
 
-        # #2. Fill up the cluster to the given percentage
-        # get the number of pods and iterations to run to fill the cluster for a given %age fill factor
-        # cluster_pods_to_create, cluster_fill_iterations = tier4_helpers.cluster_fill_get_pod_iter("37")
-
-        # num_of_pvcs = int(cluster_pods_to_create/3)
-        # logging.info(f"1. number of pvcs to create = {num_of_pvcs}")
-
+        # Fill up the cluster to the given percentage:
         # Create DC pods. These pods will be used to fill the cluster. Once the cluster is filled to the required
         # level, the test will begin while IOs in these pods continue till the end of the test.
 
-        num_of_pvcs = 8
+        num_of_pvcs = 1
         rwo_rbd_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
                                     project=project, access_mode="RWO", pool_type='rbd')
 
@@ -134,6 +144,7 @@ class TestTier4Framework(ManageTest):
                                        project=project, access_mode="RWO", pool_type='cephfs')
         rwx_cephfs_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
                                        project=project, access_mode="RWX", pool_type='cephfs')
+        """
         cluster_fill_io_pods = rwo_rbd_pods + rwo_cephfs_pods + rwx_cephfs_pods
         logging.info("#2: The DC pods are up. Running IOs from them to fill the cluster")
         logging.info(f"Will be running IOs from these pods = {cluster_fill_io_pods}")
@@ -142,8 +153,8 @@ class TestTier4Framework(ManageTest):
         with ThreadPoolExecutor() as executor:
             for p in cluster_fill_io_pods:
                 logging.info(f"calling fillup fn from {p.name}")
-                jobs.append(executor.submit(tier4_helpers.cluster_fillup, p, 26))
-                #tier4_helpers.cluster_fillup( p, 30)
+                jobs.append(executor.submit(tier4_helpers.cluster_fillup, p, 32))
+                # tier4_helpers.cluster_fillup(p, 32)
 
         from time import sleep
         for j in jobs:
@@ -154,13 +165,12 @@ class TestTier4Framework(ManageTest):
             if not j.done():
                 logging.error(f"#### Data integrity check failure. Test failed.")
                 exit(1)
-
+                
         """
-        # #3. Check for entry criteria on Logging, monitoring and registry
-        # monitoring_pods_restarts_count = entry_criteria_check_configure_ocp_workloads()
 
-        # #4. Start running the operations like PVC and Pod create and delete in background
-        # executor = ThreadPoolExecutor(max_workers=32)
+        # Start running the operations like PVC and Pod create and delete in background:
+        """
+        executor = ThreadPoolExecutor(max_workers=32)
         status_create_delete_pvc_pods = executor.submit(test_create_delete_pvcs,multi_pvc_factory, pod_factory, project)
         from time import sleep
         while not (status_create_delete_pvc_pods.done()):
@@ -168,17 +178,17 @@ class TestTier4Framework(ManageTest):
             logging.info("############## Not completed. sleeping....")
         """
 
+        # Start running NooBaa IOs in the background.:
         """
-        # #5. Start running NooBaa IOs in the background.
-
         status_noobaa_io = executor.submit(s3_io_create_delete, mcg_obj, awscli_pod, bucket_factory)
         while not (status_noobaa_io.done()):
             sleep(15)
             logging.info("############## Not completed. sleeping....")
         """
 
-        # #5a. Start running copy operations
-        #     Create rwx-rbd pods
+        # Start running background IOs:
+        # Create rwx-rbd pods
+        """
         pods_ios_rwx_rbd = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
                                         project=project, access_mode="RWX-BLK", pool_type='rbd')
         #     append these pods to the cluster_fill_io_pods
@@ -194,47 +204,23 @@ class TestTier4Framework(ManageTest):
                     jobs_rbd_rwx.append(executor.submit(tier4_helpers.raw_block_io, p))
                 else:
                     jobs.append(executor.submit(tier4_helpers.cluster_copy_ops, p, iterations=2))
-
-        """
-        # This is not needed as cluster_copy_ops itself asserts if there data integrity violation
-        from time import sleep
-        for j in jobs:
-            while not (j.done()):
-                logging.info(f"### job {j} not complete. sleeping....")
-                sleep(15)
-            logging.info(f"#### Result of the job {j} is = {j.done()}")
-            if not j.done():
-                logging.error(f"#### Data integrity check failure. Test failed.")
-                exit(1)
-        """
-        """
-        with ThreadPoolExecutor(max_workers=num_pvcs) as executor:
-            for p in pods_ios_rwx_rbd:
-                logging.info(f"calling fillup fn from {p.name}")
-                jobs.append(executor.submit(tier4_helpers.raw_block_io, p))
         """
 
-        # #5b. Start running pgsql
-        # #6. Make sure PGs are in active+clean state
-        # #9. Cluster has lesser than 3 osds per node.
-        # #10. All OCS pods are in running state
-        # #11. All nodes are in Ready state (including master)
-        # #7. Background operations including IOs are running successfully
-        # if Not (status_create_delete_pvc_pods.done() and status_noobaa_io.done()):
-        #     logging.error("ERROR: Background operations including IOs are NOT running")
-        # #8. All the existing OSDs are of size 2TiB(from 4.3 this is configurable)
-        # #12. Expand the cluster
+        # Start running pgsql
 
-        """
-        num_pvcs = 1
-        pods_ios_rwo_rbd = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
-                                        project=project, access_mode="RWO", pool_type='rbd')
-        pods_ios_rwo_cephfs = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
-                                           project=project, access_mode="RWO", pool_type='cephfs')
-        pods_ios_rwx_cephfs = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
-                                           project=project, access_mode="RWX", pool_type='cephfs')
-        pods_ios_rwx_rbd = multi_dc_pod(num_of_pvcs=num_pvcs, pvc_size=20,
-                                       project=project, access_mode="RWX-BLK", pool_type='rbd')
-        # pods = pods_ios_rwo_rbd # + pods_ios_rwo_cephfs + pods_ios_rwx_cephfs
-        pods = pods_ios_rwx_rbd + pods_ios_rwo_rbd  + pods_ios_rwo_cephfs + pods_ios_rwx_cephfs
-        """
+        # Cluster has lesser than 3 osds per node.:
+
+        # All OCS pods are in running state:
+        # assert check_pods_in_running_state(defaults.ROOK_CLUSTER_NAMESPACE)
+
+        # All ocs nodes are in Ready state (including master):
+        # node.wait_for_nodes_status(node_names=None, status=constants.NODE_READY, timeout=5)
+        # logging.info("All master and worker nodes are in Ready state.")
+        # with ThreadPoolExecutor(1) as executor:
+        #     executor.submit(check_nodes_status, 12)
+
+        # Background operations including IOs are running successfully:
+        # if not (status_create_delete_pvc_pods.done() and status_noobaa_io.done()):
+        #     logging.error("ERROR: Background operations including IOs are NOT running"):
+        # All the existing OSDs are of size 2TiB(from 4.3 this is configurable):
+        # Expand the cluster:
