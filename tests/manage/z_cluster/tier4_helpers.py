@@ -30,22 +30,16 @@ def cluster_fillup(fill_pod, percent_required_filled):
 
     logging.info(f"#### Filling up cluster FROM Pod: {fill_pod.name}")
 
-    cmd1 = """curl http://download.ceph.com/tarballs/ceph_15.1.0.orig.tar.gz --output /tmp/ceph.tar.gz """
+    dir_name = "cluster_fillup_" + uuid4().hex
+    cmd1 = "" + "curl http://download.ceph.com/tarballs/ceph_15.1.0.orig.tar.gz --output /tmp/ceph.tar.gz ;" +\
+           "mkdir /mnt/" + dir_name + ";" + ""
     logging.info(f"#### Command 1 is: {cmd1}")
     fill_pod.exec_sh_cmd_on_pod(cmd1, sh="bash")
     logging.info("#### executed cmd1")
 
-    dir_name = "cluster_fillup_" + uuid4().hex
-
-    cmd2 = "" + "mkdir /mnt/" + dir_name + ";" + "mkdir /mnt/" + dir_name + "/temp1;" + \
-           "for i in {1..30}; do cp /tmp/ceph.tar.gz /mnt/" + dir_name +"/temp1/ceph_$i.tar.gz & done" + ""
-    logging.info(f"#### Command 2 is: {cmd2}")
-    fill_pod.exec_sh_cmd_on_pod(cmd2,  sh="bash")
-    logging.info("#### executed cmd2")
-
     ct_pod = pod_helpers.get_ceph_tools_pod()
-    src_dir = "/mnt/" + dir_name + "/temp1/"
-    dir_num = 2
+    src_dir = "/tmp"
+    dir_num = 1
     percent_used_capacity = 0
     cluster_filled = False
 
@@ -54,7 +48,11 @@ def cluster_fillup(fill_pod, percent_required_filled):
         cmd = "" + "mkdir " + dest_dir + ""
         fill_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
         for i in range(1, 30):
-            cmd = "" + "cp " + src_dir + "/ceph_" + str(i) + ".tar.gz  " + dest_dir + "/. ;" + ""
+            if percent_used_capacity >= percent_required_filled:
+                logging.info(f"##### Inside if. used = {percent_used_capacity}, required = {percent_required_filled}")
+                cluster_filled = True
+                break # break the for loop
+            cmd = "" + "cp " + src_dir + "/ceph.tar.gz  " + dest_dir + "/. ;" + ""
             logging.info(f"#### Command 3 is: {cmd} ####")
             fill_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
             logging.info("#### executed cmd3 ####")
@@ -63,10 +61,6 @@ def cluster_fillup(fill_pod, percent_required_filled):
             percent_used_capacity = (output.get('total_used') / output.get('total_space')) * 100
             logging.info(f"$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ percent_used_capacity = {percent_used_capacity}. "
                          f"percent required to fill = {percent_required_filled} ####")
-            if percent_used_capacity >= percent_required_filled:
-                logging.info(f"##### Inside if. used = {percent_used_capacity}, required = {percent_required_filled}")
-                cluster_filled = True
-                break # break the for loop
         dir_num += 1
     """
     while percent_used_capacity < percent_required_filled:
