@@ -98,10 +98,12 @@ def check_cluster_size(size):
 def cluster_copy_ops(copy_pod, iterations=10):
 
     dir_name = "cluster_copy_ops_" + uuid4().hex
+    cmd = "" + "mkdir /mnt/"+ dir_name + ""
+    copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
 
     for itr in range(iterations):
         # cp ceph.tar.gz 10 times to each cpdir
-        cmd = "" + "mkdir /mnt/"+ dir_name + "; mkdir /mnt/"+ dir_name + "/copy_dir{1..10} ; " \
+        cmd = "" + "mkdir /mnt/"+ dir_name + "/copy_dir{1..10} ; " \
                    "for i in {1..10}; do cp /tmp/ceph.tar.gz /mnt/"+ dir_name + "/copy_dir$i/ceph_$i.tar.gz & done"\
               + ""
         copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
