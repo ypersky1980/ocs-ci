@@ -83,15 +83,15 @@ def delete_pods(pod_objs):
     return True
 
 @ignore_leftovers
-def test_create_delete_pvcs(multi_pvc_factory, pod_factory,project=None):
-    while True:
+def test_create_delete_pvcs(multi_pvc_factory, pod_factory,project=None, iterations=10):
+    for i in range(iterations):
+        # create the pods for deleting
         # Create rbd pvcs for pods
         logging.info('entering ..')
         pvc_objs_rbd = create_pvcs(multi_pvc_factory, 'CephBlockPool', project=project)
         proj_obj = pvc_objs_rbd[0].project
         storageclass_rbd = pvc_objs_rbd[0].storageclass
 
-        logging.info("########### created rbd pvcs")
         # Create cephfs pvcs for pods
         pvc_objs_cephfs = create_pvcs(
             multi_pvc_factory, 'CephFileSystem', project=proj_obj
@@ -115,6 +115,7 @@ def test_create_delete_pvcs(multi_pvc_factory, pod_factory,project=None):
                 resource=pod_obj, state=constants.STATUS_RUNNING, timeout=300  # Timeout given 5 minutes
             )
 
+        logging.info(f"#### Created the pods for deletion later...pods = {pods_to_delete}")
         # Create PVCs for deleting
         # Create rbd pvcs for deleting
         pvc_objs_rbd = create_pvcs(
@@ -135,13 +136,15 @@ def test_create_delete_pvcs(multi_pvc_factory, pod_factory,project=None):
                 resource=pvc_obj, state=constants.STATUS_BOUND, timeout=300  # Timeout given 5 minutes
             )
 
+        logging.info(f"#### Created the PVCs for deletion later...PVCs={all_pvc_to_delete}")
+
         # Create PVCs for new pods
         pvc_objs_rbd = create_pvcs(
             multi_pvc_factory=multi_pvc_factory, interface='CephBlockPool',
             project=proj_obj, status="", storageclass=storageclass_rbd
         )
 
-        # Create cephfs pvcs for deleting
+        # Create cephfs pvcs for new pods # for deleting
         pvc_objs_cephfs = create_pvcs(
             multi_pvc_factory=multi_pvc_factory, interface='CephFileSystem',
             project=proj_obj, status="", storageclass=storageclass_cephfs
@@ -156,6 +159,8 @@ def test_create_delete_pvcs(multi_pvc_factory, pod_factory,project=None):
             pvc_info = pvc_obj.get()
             setattr(pvc_obj, 'volume_mode', pvc_info['spec']['volumeMode'])
 
+        logging.info(f"#### Created the PVCs required for creating New Pods...{all_pvc_for_new_pods}")
+
         executor = ThreadPoolExecutor(max_workers=10)
         # Start creating new PVCs
         # Start creating rbd PVCs
@@ -165,6 +170,7 @@ def test_create_delete_pvcs(multi_pvc_factory, pod_factory,project=None):
             storageclass=storageclass_rbd
         )
 
+        logging.info("#### Started creating new RBD PVCs in thread...")
         # Start creating cephfs pvc
         cephfs_pvc_exeuter = executor.submit(
             create_pvcs, multi_pvc_factory=multi_pvc_factory,
@@ -172,6 +178,7 @@ def test_create_delete_pvcs(multi_pvc_factory, pod_factory,project=None):
             status="", storageclass=storageclass_cephfs
         )
 
+        logging.info("#### Started creating new cephfs PVCs in thread...")
         # Start creating pods
         pods_create_executer = executor.submit(
             pods_creation, pod_factory, all_pvc_for_new_pods
@@ -179,25 +186,29 @@ def test_create_delete_pvcs(multi_pvc_factory, pod_factory,project=None):
 
         # Start deleting pods
         pods_delete_executer = executor.submit(delete_pods, pods_to_delete)
+        logging.info(f"### Started deleting the pods_to_delete = {pods_to_delete}")
 
         # Start deleting PVC
         pvc_delete_executer = executor.submit(delete_pvcs, all_pvc_to_delete)
+        logging.info(f"### Started deleting the all_pvc_to_delete = {all_pvc_to_delete}")
 
         log.info(
             "These process are started: Bulk delete PVC, Pods. Bulk create PVC, "
             "Pods. Waiting for its completion"
         )
 
+        from time import sleep
+        while not (rbd_pvc_exeuter.done() and
+                cephfs_pvc_exeuter.done() and
+                pods_create_executer.done() and
+                pods_delete_executer.done() and
+                pvc_delete_executer.done()):
+            sleep(10)
+            logging.info("#### create_delete_pvcs....Waiting for threads to complete...")
+
         new_rbd_pvcs = rbd_pvc_exeuter.result()
         new_cephfs_pvcs = cephfs_pvc_exeuter.result()
         new_pods = pods_create_executer.result()
-        pods_delete_result = pods_delete_executer.result()
-        pvc_delete_result = pvc_delete_executer.result()
-
-        log.info(
-            "These process are completed: Bulk delete PVC, Pods. Bulk create PVC,"
-            "Pods. Checking status of pods and pvcs"
-        )
 
         # Check pvc status
         for pvc_obj in new_rbd_pvcs + new_cephfs_pvcs:
@@ -225,7 +236,4 @@ def test_create_delete_pvcs(multi_pvc_factory, pod_factory,project=None):
             pvc_obj.ocp.wait_for_delete(resource_name=pvc_obj.name)
 
         log.info("All PVCs are deleted as expected")
-        logging.info("#####################################################################")
-        logging.info("**************** STARTING ANOTHER ITERATION *************************")
-        logging.info("#####################################################################")
 
