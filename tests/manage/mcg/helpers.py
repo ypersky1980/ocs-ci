@@ -109,7 +109,7 @@ def write_individual_s3_objects(mcg_obj, awscli_pod, bucket_factory, downloaded_
         )
 
 
-def s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory, iterations=1):
+def s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory):
     """
     Running IOs on s3 bucket
     Args:
@@ -118,14 +118,13 @@ def s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory, iterations=1):
         bucket_factory: Calling this fixture creates a new bucket(s)
     """
     target_dir = '/aws/' + uuid4().hex + '_original/'
-    for i in range(iterations):
-        downloaded_files = retrieve_test_objects_to_pod(awscli_pod, target_dir)
-        bucketname = bucket_factory(1)[0].name
-        uploaded_objects_paths = get_full_path_object(downloaded_files, bucketname)
-        write_individual_s3_objects(mcg_obj, awscli_pod, bucket_factory, downloaded_files, target_dir,bucket_name=bucketname)
-        del_objects(uploaded_objects_paths, awscli_pod, mcg_obj)
-        awscli_pod.exec_cmd_on_pod(command=f'rm -rf {target_dir}')
-        logger.info(f"#### s3_io_create_delete. Completed iteration = {i}")
+    downloaded_files = retrieve_test_objects_to_pod(awscli_pod, target_dir)
+    bucketname = bucket_factory(1)[0].name
+    uploaded_objects_paths = get_full_path_object(downloaded_files, bucketname)
+    write_individual_s3_objects(mcg_obj, awscli_pod, bucket_factory, downloaded_files, target_dir,
+                                bucket_name=bucketname)
+    del_objects(uploaded_objects_paths, awscli_pod, mcg_obj)
+    awscli_pod.exec_cmd_on_pod(command=f'rm -rf {target_dir}')
 
 
 def del_objects(uploaded_objects_paths, awscli_pod, mcg_obj):
@@ -143,14 +142,12 @@ def get_full_path_object(downloaded_files, bucket_name):
 
     return uploaded_objects_paths
 
-def obc_io_create_delete(mcg_obj, awscli_pod, bucket_factory, iterations=1):
-    for i in range(iterations):
-        dir = '/aws/' + uuid4().hex + '_original/'
-        downloaded_files = retrieve_test_objects_to_pod(awscli_pod, dir)
-        bucket_name = bucket_factory(amount=1, interface='OC')[0].name
-        mcg_bucket_path = f's3://{bucket_name}/'
-        uploaded_objects_paths = get_full_path_object(downloaded_files, bucket_name)
-        sync_object_directory(awscli_pod,dir,mcg_bucket_path,mcg_obj)
-        del_objects(uploaded_objects_paths, awscli_pod, mcg_obj)
-        awscli_pod.exec_cmd_on_pod(command=f'rm -rf {dir}')
-        logger.info(f"#### obc_io_create_delete. Completed iteration = {i}")
+def obc_io_create_delete(mcg_obj, awscli_pod, bucket_factory):
+    dir = '/aws/' + uuid4().hex + '_original/'
+    downloaded_files = retrieve_test_objects_to_pod(awscli_pod, dir)
+    bucket_name = bucket_factory(amount=1, interface='OC')[0].name
+    mcg_bucket_path = f's3://{bucket_name}/'
+    uploaded_objects_paths = get_full_path_object(downloaded_files, bucket_name)
+    sync_object_directory(awscli_pod, dir, mcg_bucket_path, mcg_obj)
+    del_objects(uploaded_objects_paths, awscli_pod, mcg_obj)
+    awscli_pod.exec_cmd_on_pod(command=f'rm -rf {dir}')

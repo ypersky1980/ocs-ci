@@ -95,53 +95,51 @@ def check_cluster_size(size):
             return False
         time.sleep(1200)
 
-def cluster_copy_ops(copy_pod, iterations=10):
+def cluster_copy_ops(copy_pod): #, iterations=10):
 
     dir_name = "cluster_copy_ops_" + uuid4().hex
     cmd = "" + "mkdir /mnt/"+ dir_name + ""
     copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
 
-    for itr in range(iterations):
-        # cp ceph.tar.gz 10 times to each cpdir
-        cmd = "" + "mkdir /mnt/"+ dir_name + "/copy_dir{1..10} ; " \
-                   "for i in {1..10}; do cp /tmp/ceph.tar.gz /mnt/"+ dir_name + "/copy_dir$i/ceph_$i.tar.gz & done"\
-              + ""
-        copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
+    # cp ceph.tar.gz 10 times to each cpdir
+    cmd = "" + "mkdir /mnt/"+ dir_name + "/copy_dir{1..10} ; " \
+               "for i in {1..10}; do cp /tmp/ceph.tar.gz /mnt/"+ dir_name + "/copy_dir$i/ceph_$i.tar.gz & done"\
+          + ""
+    copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
 
-        # check md5sum
-        # since the file to be copied is from a wellknown location, we calculated its md5sum and found it to be:
-        # 016c37aa72f12e88127239467ff4962b. We will pass this value to the pod to see if it matches that of the same
-        # file copied in different directories of the pod.
-        # (we could calculate the md5sum by downloading first outside of pod and then comparing it with that of pod.
-        # But this will increase the execution time as we have to wait for download to complete once outside pod and
-        # once inside pod)
-        md5sum_val_expected = "016c37aa72f12e88127239467ff4962b"
+    # check md5sum
+    # since the file to be copied is from a wellknown location, we calculated its md5sum and found it to be:
+    # 016c37aa72f12e88127239467ff4962b. We will pass this value to the pod to see if it matches that of the same
+    # file copied in different directories of the pod.
+    # (we could calculate the md5sum by downloading first outside of pod and then comparing it with that of pod.
+    # But this will increase the execution time as we have to wait for download to complete once outside pod and
+    # once inside pod)
+    md5sum_val_expected = "016c37aa72f12e88127239467ff4962b"
 
-        # We are not using the pod.verify_data_integrity with the fedora dc pods as of now for the following reason:
-        # verify_data_integrity function in pod.py calls check_file_existence which in turn uses 'find' utility to see
-        # if the file given exists or not. In fedora pods which this function mainly deals with, the 'find' utility
-        # doesn't come by default. It has to be installed. While doing so, 'yum install findutils' hangs.
-        # the link "https://forums.fedoraforum.org/showthread.php?320926-failovemethod-option" mentions the solution:
-        # to run "sed -i '/^failovermethod=/d' /etc/yum.repos.d/*.repo". This command takes at least 6-7 minutes to
-        # complete. If this has to be repeated on 24 pods, then time taken to complete may vary between 20-30 minutes
-        # even if they are run in parallel threads.
-        # Instead of this if we use shell command: "md5sun" directly we can reduce the time drastically. And hence we
-        # are not using verify_data_integrity() here.
+    # We are not using the pod.verify_data_integrity with the fedora dc pods as of now for the following reason:
+    # verify_data_integrity function in pod.py calls check_file_existence which in turn uses 'find' utility to see
+    # if the file given exists or not. In fedora pods which this function mainly deals with, the 'find' utility
+    # doesn't come by default. It has to be installed. While doing so, 'yum install findutils' hangs.
+    # the link "https://forums.fedoraforum.org/showthread.php?320926-failovemethod-option" mentions the solution:
+    # to run "sed -i '/^failovermethod=/d' /etc/yum.repos.d/*.repo". This command takes at least 6-7 minutes to
+    # complete. If this has to be repeated on 24 pods, then time taken to complete may vary between 20-30 minutes
+    # even if they are run in parallel threads.
+    # Instead of this if we use shell command: "md5sun" directly we can reduce the time drastically. And hence we
+    # are not using verify_data_integrity() here.
 
-        for i in range(1, 10):
+    for i in range(1, 10):
 
-            cmd = "" + "md5sum /mnt/"+ dir_name + "/copy_dir" + str(i) +"/ceph_" + str(i) + ".tar.gz " + ""
-            output = copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
-            md5sum_val_got = output.split("  ")[0]
-            logger.info(f"#### md5sum obtained for pod: {copy_pod.name} is {md5sum_val_got}")
-            logger.info(f"#### Expected was: {md5sum_val_expected}")
-            assert md5sum_val_got == md5sum_val_expected, \
-                f"***** md5sum check FAILED. expected: {md5sum_val_expected}, but got {md5sum_val_got}"
+        cmd = "" + "md5sum /mnt/"+ dir_name + "/copy_dir" + str(i) +"/ceph_" + str(i) + ".tar.gz " + ""
+        output = copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
+        md5sum_val_got = output.split("  ")[0]
+        logger.info(f"#### md5sum obtained for pod: {copy_pod.name} is {md5sum_val_got}")
+        logger.info(f"#### Expected was: {md5sum_val_expected}")
+        assert md5sum_val_got == md5sum_val_expected, \
+            f"***** md5sum check FAILED. expected: {md5sum_val_expected}, but got {md5sum_val_got}"
 
-        logging.info("#### Data Integrity check passed")
+    logging.info("#### Data Integrity check passed")
 
-        # Remove the directories and loop back again
-        cmd = "" + "rm -rf /mnt/" + dir_name + "/copy_dir{1..10}" + ""
-        logging.info(f"#### command to remove = {cmd}")
-        copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash") #, timeout=None)
-        logging.info(f"########### cluster_copy_ops: Completed {itr+1} Iterations")
+    # Remove the directories - clean up
+    cmd = "" + "rm -rf /mnt/" + dir_name + "/copy_dir{1..10}" + ""
+    logging.info(f"#### command to remove = {cmd}")
+    copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash") #, timeout=None)

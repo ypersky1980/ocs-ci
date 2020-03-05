@@ -1,5 +1,7 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from time import sleep
+
 from ocs_ci.ocs import constants
 from ocs_ci.ocs.ocp import OCP
 from ocs_ci.ocs import defaults
@@ -7,7 +9,6 @@ from ocs_ci.ocs.resources import pod
 from ocs_ci.utility import deployment_openshift_logging as ocp_logging_obj
 from ocs_ci.framework.testlib import tier1, tier4, ignore_leftovers, ManageTest
 from tests.manage.z_cluster import tier4_helpers
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from ocs_ci.ocs import constants
 from tests.manage.z_cluster.cluster_expansion.create_delete_pvc_parallel import test_create_delete_pvcs
 from tests.manage.mcg.helpers import s3_io_create_delete, obc_io_create_delete
@@ -17,13 +18,13 @@ from ocs_ci.ocs import node
 import pytest
 from ocs_ci.framework import config
 from multiprocessing import Process
-from concurrent.futures import ThreadPoolExecutor
-
 from tests import helpers
 from ocs_ci.ocs.cluster import CephCluster
-#from tests.manage.z_cluster.cluster_expansion.create_delete_pvc_parallel import test_create_delete_pvcs
-# from tests.manage.mcg.test_write_to_bucket import TestBucketIO
+
 logger = logging.getLogger(__name__)
+
+# Following global variable is needed to end the background threads once test completes.
+global EXPANSION_COMPLETED
 
 
 # This function can be moved to pod.py
@@ -43,17 +44,6 @@ def get_pod_restarts_count(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
             restart_dict[p.name] = ocp_pod_obj.get_resource(p.name,'RESTARTS')
 
     return restart_dict
-
-
-def check_nodes_status(iterations=10):
-    """
-    This function runs in a loop to check the status of nodes. If the node(s) are in NotReady state then an
-    exception is raised. Note: this function needs to be run as a background thread during the execution of a test
-
-    """
-    for i in range(iterations):
-        node.wait_for_nodes_status(node_names=None, status=constants.NODE_READY, timeout=5)
-        logging.info("All master and worker nodes are in Ready state.")
 
 
 def check_pods_in_running_state(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
@@ -107,11 +97,74 @@ def entry_criteria_check_configure_ocp_workloads():
 def exit_criteria_check_ocp_workloads():
     return check_ocp_workloads()
 
+
+def wrapper_test_create_delete_pvcs(multi_pvc_factory, pod_factory, project):
+    for i in range(30):
+        global EXPANSION_COMPLETED
+        if EXPANSION_COMPLETED:
+            logging.info(f"wrapper_test_create_delete_pvcs: Mugeetu kaNale!!!. In iteration {i-1}")
+            return True
+        else:
+            test_create_delete_pvcs(multi_pvc_factory, pod_factory, project)
+            logging.info(f"wrapper_test_create_delete_pvcs: completed iteration {i}")
+
+
+def wrapper_obc_io_create_delete(mcg_obj, awscli_pod, bucket_factory):
+    global EXPANSION_COMPLETED
+    for i in range(30):
+        if EXPANSION_COMPLETED:
+            logging.info(f"wrapper_obc_io_create_delete: Mugeetu kaNale!!!. In iteration {i-1}")
+            return True
+        else:
+            obc_io_create_delete(mcg_obj, awscli_pod, bucket_factory)
+            logging.info(f"wrapper_obc_io_create_delete: iteration {i}")
+
+def wrapper_cluster_copy_ops(copy_pod):
+    global EXPANSION_COMPLETED
+    for i in range(20):
+        if EXPANSION_COMPLETED:
+            logging.info(f"wrapper_cluster_copy_ops : Mugeetu kaNale!!!. In iteration {i-1}")
+            return True
+        else:
+            tier4_helpers.cluster_copy_ops(copy_pod)
+            logging.info(f"wrapper_cluster_copy_ops : iteration {i-1}")
+
+
+def wrapper_s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory):
+    global EXPANSION_COMPLETED
+    for i in range(30):
+        if EXPANSION_COMPLETED:
+            logging.info(f"wrapper_s3_io_create_delete: Mugeetu kaNale!!!. In iteration {i-1}")
+            return True
+        else:
+            s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory)
+            logging.info(f"wrapper_s3_io_create_delete: iteration {i}")
+
+
+def check_nodes_status():
+    """
+    This function runs in a loop to check the status of nodes. If the node(s) are in NotReady state then an
+    exception is raised. Note: this function needs to be run as a background thread during the execution of a test
+    """
+    global EXPANSION_COMPLETED
+    logging.info(f"Entered check_nodes_status. Exp_cmp = {EXPANSION_COMPLETED}")
+    for i in range(200):
+        if EXPANSION_COMPLETED:
+            logging.info("wrapper_check_nodes_status: Mugeetu kaNale!!!")
+            logging.info(f"wrapper_s3_io_create_delete: iteration {i}")
+            return True
+        else:
+            node.wait_for_nodes_status(node_names=None, status=constants.NODE_READY, timeout=5)
+            logging.info("All master and worker nodes are in Ready state.")
+
+
 @ignore_leftovers
 @tier4
 class TestTier4Framework(ManageTest):
     def test_tier4_framework(self, project_factory, multi_dc_pod, multi_pvc_factory, pod_factory,
                                             mcg_obj, awscli_pod, bucket_factory):
+        global EXPANSION_COMPLETED
+        EXPANSION_COMPLETED = False
         # with ThreadPoolExecutor() as executor:
         #     res = executor.submit(obc_io_create_delete, mcg_obj, awscli_pod, bucket_factory, 2)
         # from time import sleep
@@ -135,8 +188,8 @@ class TestTier4Framework(ManageTest):
 
         # All the existing OSDs are of size 2TiB(from 4.3 this is configurable):
 
-        # All OCS pods are in.done state:
-        # assert check_pods_in.done_state(defaults.ROOK_CLUSTER_NAMESPACE)
+        # All OCS pods are in running state:
+        # assert check_pods_in_running_state(defaults.ROOK_CLUSTER_NAMESPACE)
 
         # Create the namespace under which this test will executeq:
         project = project_factory()
@@ -180,60 +233,51 @@ class TestTier4Framework(ManageTest):
         # Start.done the operations like PVC and Pod create and delete in background:
         executor = ThreadPoolExecutor(max_workers=32)
         status_create_delete_pvc_pods = executor.submit(
-            test_create_delete_pvcs,multi_pvc_factory, pod_factory, project, 20)
+            wrapper_test_create_delete_pvcs,multi_pvc_factory, pod_factory, project)
         logging.info("Started test_create_delete_pvcs...")
         # while not (status_create_delete_pvc_pods.done()):
         #    sleep(15)
         #    logging.info("############## Not completed. sleeping....")
 
         # Start creating and deleting the noobaa OBCs:
-        status_obc_create_delete = executor.submit(obc_io_create_delete, mcg_obj, awscli_pod, bucket_factory, 20)
+        status_obc_create_delete = executor.submit(wrapper_obc_io_create_delete, mcg_obj, awscli_pod, bucket_factory)
         logging.info("Started obc_create_delete...")
 
         # Start.done NooBaa IOs in the background.:
-        status_noobaa_io = executor.submit(s3_io_create_delete, mcg_obj, awscli_pod, bucket_factory, 20)
+        status_noobaa_io = executor.submit(wrapper_s3_io_create_delete, mcg_obj, awscli_pod, bucket_factory)
         logging.info("Started s3_io_create_delete...")
-        # while not (status_noobaa_io.done()):#
-        #     sleep(15)
-        #     logging.info("############## Not completed. sleeping....")
 
-        # Start.done background IOs:
+        # Start running background IOs:
         # append these pods to the cluster_fill_io_pods
         # Note: we want cluster_fill_io_pods to have its elements in random order. Try this out
         cluster_fill_io_pods = cluster_fill_io_pods + pods_ios_rwx_rbd
-        # status_cluster_ios_rbd_rwx = []
         status_cluster_ios = []
         for p in cluster_fill_io_pods:
             logging.info(f"calling cluster_copy_ops for {p.name}")
             if p.pod_type == "rbd_block_rwx":
                 status_cluster_ios.append(executor.submit(tier4_helpers.raw_block_io, p))
             else:
-                status_cluster_ios.append(executor.submit(tier4_helpers.cluster_copy_ops, p, iterations=20))
-        logging.info("Started tier4_helpers.cluster_copy_ops...")
+                status_cluster_ios.append(executor.submit(wrapper_cluster_copy_ops, p))
 
-        """
-        May not be needed
-        with ThreadPoolExecutor(max_workers=(num_of_pvcs * 3)) as executor:
-            for p in cluster_fill_io_pods:
-                logging.info(f"calling cluster_copy_ops for {p.name}")
-                if p.pod_type == "rbd_block_rwx":
-                    jobs_rbd_rwx.append(executor.submit(tier4_helpers.raw_block_io, p))
-                else:
-                    jobs.append(executor.submit(tier4_helpers.cluster_copy_ops, p, iterations=2))
-        """
 
-        # Start.done pgsql
+        # Run pgsql
 
         # All ocs nodes are in Ready state (including master):
-        node_status = executor.submit(check_nodes_status, 200)
+        node_status = executor.submit(check_nodes_status)
 
-        # Expand the cluster:
-        # replace the following with actual call to add_capacity
+        # Expand the cluster: replace the following with actual call to add_capacity
+
+        ##########################
+        # Call add_capacity here #
+        ##########################
+
+        # Following for loop is simulating the add_capacity (sleeos for 200 seconds)
         for i in range(100):
             logging.info(f"I AM Main thread. I am sleeping for 20 sec. In iteration {i}")
             sleep(2)
 
-        logging.info("Add Capacity completed successfully!")
+        logging.info(f"Add Capacity completed successfully!. {EXPANSION_COMPLETED}")
+
         # Exit criteria verification:
         # Check if all threads for Background operations and IOs are.done even after the expansion:
         logging.info(f"status_create_delete_pvc_pods = {status_create_delete_pvc_pods.running()}")
@@ -259,3 +303,11 @@ class TestTier4Framework(ManageTest):
             logging.error("Exit criteria verification FAILED")
         logging.info("********************** COMPLETED *********************************")
 
+        EXPANSION_COMPLETED = True
+
+        logging.info(f"result_create_delete_pvc_pods = {status_create_delete_pvc_pods.result()}")
+        logging.info(f"result_obc_create_delete = {status_obc_create_delete.result()}")
+        logging.info(f"result_noobaa_io = {status_noobaa_io.result()}")
+        logging.info(f"node_result = {node_status.result()}")
+        for stat in status_cluster_ios:
+            logging.info(f"stat.result() = {stat.result()}")
