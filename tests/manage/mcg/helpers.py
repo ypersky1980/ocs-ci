@@ -3,21 +3,18 @@ from concurrent.futures import ThreadPoolExecutor
 import boto3
 
 from ocs_ci.ocs import constants
-from ocs_ci.ocs.resources.pod import get_rgw_pod
 from tests.helpers import logger, craft_s3_command
-
+from uuid import uuid4
+#from ocs_ci.ocs.resources.pod import get_rgw_pod
 
 def retrieve_test_objects_to_pod(podobj, target_dir):
     """
     Downloads all the test objects to a given directory in a given pod.
-
     Args:
         podobj (OCS): The pod object to download the objects to
         target_dir:  The fully qualified path of the download target folder
-
     Returns:
         list: A list of the downloaded objects' names
-
     """
     # Download test objects from the public bucket
     downloaded_objects = []
@@ -39,14 +36,12 @@ def retrieve_test_objects_to_pod(podobj, target_dir):
 def sync_object_directory(podobj, src, target, mcg_obj=None):
     """
     Syncs objects between a target and source directories
-
     Args:
         podobj (OCS): The pod on which to execute the commands and download the objects to
         src (str): Fully qualified object source path
         target (str): Fully qualified object target path
         mcg_obj (MCG, optional): The MCG object to use in case the target or source
                                  are in an MCG
-
     """
     logger.info(f'Syncing all objects and directories from {src} to {target}')
     retrieve_cmd = f'sync {src} {target}'
@@ -64,7 +59,6 @@ def sync_object_directory(podobj, src, target, mcg_obj=None):
 def rm_object_recursive(podobj, target, mcg_obj, option=''):
     """
     Remove bucket objects with --recursive option
-
     Args:
         podobj  (OCS): The pod on which to execute the commands and download
                        the objects to
@@ -72,7 +66,6 @@ def rm_object_recursive(podobj, target, mcg_obj, option=''):
         mcg_obj (MCG, optional): The MCG object to use in case the target or
                                  source are in an MCG
         option (str): Extra s3 remove command option
-
     """
     rm_command = f"rm s3://{target} --recursive {option}"
     podobj.exec_cmd_on_pod(
@@ -86,10 +79,8 @@ def rm_object_recursive(podobj, target, mcg_obj, option=''):
 def get_rgw_restart_count():
     """
     Gets the restart count of RGW pod
-
     Returns:
         restart_count (int): RGW pod Restart count
-
     """
     rgw_pod = get_rgw_pod()
     return rgw_pod.restart_count
@@ -98,7 +89,6 @@ def get_rgw_restart_count():
 def write_individual_s3_objects(mcg_obj, awscli_pod, bucket_factory, downloaded_files, target_dir, bucket_name=None):
     """
     Writes objects one by one to an s3 bucket
-
     Args:
         mcg_obj (obj): An MCG object containing the MCG S3 connection credentials
         awscli_pod (pod): A pod running the AWSCLI tools
@@ -107,7 +97,6 @@ def write_individual_s3_objects(mcg_obj, awscli_pod, bucket_factory, downloaded_
         target_dir (str): The fully qualified path of the download target folder
         bucket_name (str): Name of the bucket
             (default: none)
-
     """
     bucketname = bucket_name or bucket_factory(1)[0].name
     logger.info(f'Writing objects to bucket')
@@ -120,7 +109,7 @@ def write_individual_s3_objects(mcg_obj, awscli_pod, bucket_factory, downloaded_
         )
 
 
-def s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory):
+def s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory, iterations=1):
     """
     Running IOs on s3 bucket
     Args:
@@ -128,34 +117,40 @@ def s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory):
         awscli_pod (pod): A pod running the AWSCLI tools
         bucket_factory: Calling this fixture creates a new bucket(s)
     """
-    iteration = 1
-    while True:
-        logger.info(f"########## Starting iteration : {iteration}")
-        downloaded_files = []
-        public_s3 = boto3.resource('s3', region_name=mcg_obj.region)
-        with ThreadPoolExecutor() as p:
-            for obj in public_s3.Bucket(constants.TEST_FILES_BUCKET).objects.all():
-                # Download test object(s)
-                logger.info(f'Downloading {obj.key}')
-                p.submit(awscli_pod.exec_cmd_on_pod,
-                         command=f'wget https://{constants.TEST_FILES_BUCKET}.s3.{mcg_obj.region}.amazonaws.com/{obj.key}'
-                         )
-                downloaded_files.append(obj.key)
-                downloaded_files.append(obj.key)
+    target_dir = '/aws/' + uuid4().hex + '_original/'
+    for i in range(iterations):
+        downloaded_files = retrieve_test_objects_to_pod(awscli_pod, target_dir)
         bucketname = bucket_factory(1)[0].name
-        logger.info(f'Writing objects to bucket')
+        uploaded_objects_paths = get_full_path_object(downloaded_files, bucketname)
+        write_individual_s3_objects(mcg_obj, awscli_pod, bucket_factory, downloaded_files, target_dir,bucket_name=bucketname)
+        del_objects(uploaded_objects_paths, awscli_pod, mcg_obj)
+        awscli_pod.exec_cmd_on_pod(command=f'rm -rf {target_dir}')
+        logger.info(f"#### s3_io_create_delete. Completed iteration = {i}")
 
-        for obj_name in downloaded_files:
-            full_object_path = f"s3://{bucketname}/{obj_name}"
-            copycommand = f"cp {obj_name} {full_object_path}"
-            assert 'Completed' in awscli_pod.exec_cmd_on_pod(
-                command=craft_s3_command(mcg_obj, copycommand), out_yaml_format=False,
-                secrets=[mcg_obj.access_key_id, mcg_obj.access_key, mcg_obj.s3_endpoint]
-            )
 
-        for uploaded_filename in downloaded_files:
-            logger.info(f'Deleting object {uploaded_filename}')
-            awscli_pod.exec_cmd_on_pod(
-                command=craft_s3_command(mcg_obj, "rm " + uploaded_filename),
-                secrets=[mcg_obj.access_key_id, mcg_obj.access_key, mcg_obj.s3_endpoint]
-            )
+def del_objects(uploaded_objects_paths, awscli_pod, mcg_obj):
+    for uploaded_filename in uploaded_objects_paths:
+        logger.info(f'Deleting object {uploaded_filename}')
+        awscli_pod.exec_cmd_on_pod(
+            command=craft_s3_command(mcg_obj, "rm " + uploaded_filename),
+            secrets=[mcg_obj.access_key_id, mcg_obj.access_key, mcg_obj.s3_endpoint]
+        )
+
+def get_full_path_object(downloaded_files, bucket_name):
+    uploaded_objects_paths = []
+    for uploaded_filename in downloaded_files:
+        uploaded_objects_paths.append(f"s3://{bucket_name}/{uploaded_filename}")
+
+    return uploaded_objects_paths
+
+def obc_io_create_delete(mcg_obj, awscli_pod, bucket_factory, iterations=1):
+    for i in range(iterations):
+        dir = '/aws/' + uuid4().hex + '_original/'
+        downloaded_files = retrieve_test_objects_to_pod(awscli_pod, dir)
+        bucket_name = bucket_factory(amount=1, interface='OC')[0].name
+        mcg_bucket_path = f's3://{bucket_name}/'
+        uploaded_objects_paths = get_full_path_object(downloaded_files, bucket_name)
+        sync_object_directory(awscli_pod,dir,mcg_bucket_path,mcg_obj)
+        del_objects(uploaded_objects_paths, awscli_pod, mcg_obj)
+        awscli_pod.exec_cmd_on_pod(command=f'rm -rf {dir}')
+        logger.info(f"#### obc_io_create_delete. Completed iteration = {i}")
