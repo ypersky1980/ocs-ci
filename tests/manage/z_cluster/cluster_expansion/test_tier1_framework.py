@@ -125,7 +125,7 @@ def check_osd_pods_added(before, after, expected_osd_pod_count):
         return False
 
 
-def check_osd_tree(tree_output):
+def check_osd_tree(tree_output, number_of_osds):
     # in case of vmware, there will be only one zone as of now. The OSDs are arranged as follows:
     # ID  CLASS WEIGHT  TYPE NAME                            STATUS REWEIGHT PRI-AFF
     # -1       0.99326 root default
@@ -136,22 +136,24 @@ def check_osd_tree(tree_output):
     # When cluster expansion is successfully done, a host and an osd are added in each rack.
     # The number of hosts will be equal to the number osds the cluster has. Each rack can
     # have multiple hosts but each host will have only one osd under it.
+    number_of_hosts_expected = number_of_osds
     all_hosts = []
-    number_of_hosts_expected = 1
     racks = tree_output['nodes'][0]['children']
     logging.info(f"racks = {racks}")
     for rack in range(len(racks)):
         logging.info(f"looping for rack {racks[rack]}")
         for i in range(1, len(tree_output['nodes'])):
             if tree_output['nodes'][i]['id'] == racks[rack]:
-                # logging.info("%%%%% = ", tree_output['nodes'][i]) #['children'])
                 if len(tree_output['nodes'][i]['children']) == number_of_hosts_expected:
                     for host in range(len(tree_output['nodes'][i]['children'])):
                         logging.info(f"HOST {tree_output['nodes'][i]['children'][host]}")
                         all_hosts.append(tree_output['nodes'][i]['children'][host])
-                    logging.info(f"Match found for Rack: {racks[rack]}")
-                    logging.info(f"The rack {racks[rack]} has {number_of_hosts_expected} host(s) as Expected")
-                    logging.info(f"All hosts = {all_hosts}")
+                        logging.info(f"Match found for Rack: {racks[rack]}")
+                        logging.info(f"The rack {racks[rack]} has {number_of_hosts_expected} host(s) as Expected")
+                        logging.info(f"All hosts = {all_hosts}")
+                else:
+                    logging.info(f"The rack {racks[rack]} Does NOT have {number_of_hosts_expected} host(s) as Expected")
+                    return False
     for each_host in range(len(all_hosts)):
         logging.info(f"Each host = {all_hosts[each_host]}")
         for i in range(len(tree_output['nodes'])):
@@ -160,7 +162,9 @@ def check_osd_tree(tree_output):
                 number_osd_in_host = len(tree_output['nodes'][i]['children'])
                 if number_osd_in_host > 1 or number_osd_in_host <= 0:
                     logging.error("Error. ceph osd tree is formed correctly after cluster expansion")
+                    return False
     logging.info("All success")
+    return True
 
 
 @ignore_leftovers
@@ -299,7 +303,8 @@ class TestTier1Framework(ManageTest):
         # Following is for vmware 1 AZ only. For AWS 3 and 1 AZ - TBD
         ct_pod = pod_helpers.get_ceph_tools_pod()
         output = ct_pod.exec_ceph_cmd(ceph_cmd='ceph osd tree')
-        check_osd_tree(output)
+        assert check_osd_tree(output, len(osd_pods_after)), \
+            "Exit criteria verification FAILED: Incorrect ceph osd tree formation found"
         logging.error("Exit criteria verification PASSED")
         logging.info("********************** COMPLETED *********************************")
 
