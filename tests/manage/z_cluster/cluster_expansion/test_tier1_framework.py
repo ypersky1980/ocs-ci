@@ -171,14 +171,6 @@ class TestTier1Framework(ManageTest):
         global EXPANSION_COMPLETED
         EXPANSION_COMPLETED = False
 
-        ct_pod = pod_helpers.get_ceph_tools_pod()
-        output = ct_pod.exec_ceph_cmd(ceph_cmd='ceph osd tree')
-        logging.info(f"ceph osd tree = {output}")
-        exit(1)
-
-
-
-
         # ###################################
         #           ENTRY CRITERIA          #
         #####################################
