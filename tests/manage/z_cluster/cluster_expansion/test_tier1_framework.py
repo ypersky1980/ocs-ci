@@ -59,7 +59,7 @@ def wrapper_cluster_copy_ops(copy_pod):
     global EXPANSION_COMPLETED
     for i in range(20):
         if EXPANSION_COMPLETED:
-            logging.info(f"wrapper_cluster_copy_ops : Mugeetu kaNale!!!. In iteration {i-1}")
+            logging.info(f"wrapper_cluster_copy_ops : Done with execution. Stopping the thread. In iteration {i-1}")
             return True
         else:
             tier4_helpers.cluster_copy_ops(copy_pod)
@@ -70,7 +70,7 @@ def wrapper_s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory):
     global EXPANSION_COMPLETED
     for i in range(30):
         if EXPANSION_COMPLETED:
-            logging.info(f"wrapper_s3_io_create_delete: Mugeetu kaNale!!!. In iteration {i-1}")
+            logging.info(f"wrapper_s3_io_create_delete: Done with execution. Stopping the thread. In iteration {i-1}")
             return True
         else:
             s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory)
