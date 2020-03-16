@@ -1,12 +1,11 @@
 import logging
-import time
+from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
+
 from ocs_ci.ocs import constants
 from ocs_ci.ocs import defaults
 from ocs_ci.ocs.ocp import OCP
 import ocs_ci.ocs.resources.pod as pod_helpers
-from ocs_ci.ocs.cluster import CephCluster, count_cluster_osd
-
-from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +16,12 @@ def raw_block_io(raw_blk_pod,size='100G'):
 
 # move this function to cluster.py
 def get_osd_size():
+    """
+    Function to get the osd size
+    Returns:
+        The size of the osd in int
+
+    """
     ocp = OCP(namespace=defaults.ROOK_CLUSTER_NAMESPACE, kind=constants.STORAGECLUSTER)
     sc = ocp.get()
 
@@ -26,74 +31,99 @@ def get_osd_size():
         get('spec').get('resources').get('requests').get('storage')[:-2]
 
 
-def cluster_fillup(fill_pod, percent_required_filled):
+def get_percent_used_capacity():
+    """
+         Function to calculate the percentage of used capacity in a cluster
+    Returns:
+        The percentage of the used capacity in the cluster in int
 
-    logging.info(f"#### Filling up cluster FROM Pod: {fill_pod.name}")
-
-    dir_name = "cluster_fillup_" + uuid4().hex
-    cmd1 = "" + "curl http://download.ceph.com/tarballs/ceph_15.1.0.orig.tar.gz --output /tmp/ceph.tar.gz ;" +\
-           "mkdir /mnt/" + dir_name + ";" + ""
-    logging.info(f"#### Command 1 is: {cmd1}")
-    fill_pod.exec_sh_cmd_on_pod(cmd1, sh="bash")
-    logging.info("#### executed cmd1")
-
+    """
     ct_pod = pod_helpers.get_ceph_tools_pod()
-    src_dir = "/tmp"
-    dir_num = 1
-    percent_used_capacity = 0
+    output = ct_pod.exec_ceph_cmd(ceph_cmd='rados df')
+    return output.get('total_used') / output.get('total_space') * 100
+
+
+def downloader(dest_pod):
+    """
+        This function downloads a wellknown file from the net on a given pod's /mnt directory
+    Args:
+        dest_pod: pod on which the file need to be downloaded
+
+    Returns:
+
+    """
+    curl_cmd = "" + "if [ -e /mnt/ceph.tar.gz ]; " \
+                    "then " \
+                    "   echo /mnt/ceph.tar.gz exists.; " \
+                    "else " \
+                    "   curl http://download.ceph.com/tarballs/ceph_15.1.0.orig.tar.gz --output /mnt/ceph.tar.gz ; " \
+                    "fi" \
+               + ""
+    dest_pod.exec_sh_cmd_on_pod(curl_cmd, sh="bash")
+    logging.info(f"#### downloaded ceph.tar.gz file in {dest_pod.name}")
+
+
+def filler(fill_pod):
+    """
+        This function copies the file downloaded by 'downloader' function in a unique directory to increase the
+        cluster space utilization. Currently it makes 30 copies of the downloaded file in a given directory which is
+        equivalent to almost 4 GiB of storage.
+
+    Args:
+        fill_pod: the pod on which the storage space need to be filled.
+
+    Returns:
+
+    """
+    target_dir_name = "/mnt/cluster_fillup0_" + uuid4().hex
+    mkdir_cmd = "" + "mkdir " + target_dir_name + ""
+    logging.info("#################### JUNK 1 ######################3")
+    fill_pod.exec_sh_cmd_on_pod(mkdir_cmd, sh="bash")
+
+    tee_cmd = "" + " tee " + target_dir_name + "/ceph.tar.gz{1..30} < /mnt/ceph.tar.gz >/dev/null" + ""
+    #tee_cmd = "" + " tee " + target_dir_name + "/ceph.tar.gz{1..30} < /mnt/ceph.tar.gz >/dev/null &" + ""
+    logging.info("#################### JUNK 2 ######################3")
+    fill_pod.exec_sh_cmd_on_pod(tee_cmd, sh="bash")
+    logging.info(f"Executed command {tee_cmd}")
+
+
+def cluster_filler(pods_to_fill, percent_required_filled):
+    """
+        This function does the following:
+        1) calls 'downloader' to download a file from the wellknown location in the net
+        2) calls 'filler' to copy the above downloaded file into an unique directory on the given pod if the
+        %age of the space used in cluster is lesser than the 'percent_required_filled'.
+    Args:
+        pods_to_fill(list): List of pods on which the file needs to be copied to increase the cluster space utilized
+        percent_required_filled(int): The percentage to which the cluster has its storage utilized
+
+    Returns:
+
+    """
+    with ThreadPoolExecutor() as downloader_executor:
+        for p in pods_to_fill:
+            downloader_executor.submit(downloader, p)
+            logging.info(f"### initiated downloader for {p.name}")
+    concurrent_copies = 5 # 3
     cluster_filled = False
 
+    filler_executor = ThreadPoolExecutor()
     while not cluster_filled:
-        dest_dir = "/mnt/"+dir_name+"/temp"+str(dir_num)
-        cmd = "" + "mkdir " + dest_dir + ""
-        fill_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
-        for i in range(1, 30):
-            if percent_used_capacity >= percent_required_filled:
-                logging.info(f"##### Inside if. used = {percent_used_capacity}, required = {percent_required_filled}")
-                cluster_filled = True
-                break # break the for loop
-            cmd = "" + "cp " + src_dir + "/ceph.tar.gz  " + dest_dir + "/. ;" + ""
-            logging.info(f"#### Command 3 is: {cmd} ####")
-            fill_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
-            logging.info("#### executed cmd3 ####")
-            # use a function from cluster.py to replace these following 2 lines
-            output = ct_pod.exec_ceph_cmd(ceph_cmd='rados df')
-            percent_used_capacity = (output.get('total_used') / output.get('total_space')) * 100
-            logging.info(f"$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ percent_used_capacity = {percent_used_capacity}. "
-                         f"percent required to fill = {percent_required_filled} ####")
-        dir_num += 1
-    """
-    while percent_used_capacity < percent_required_filled:
+        for copy_iter in range(concurrent_copies):
+            for each_pod in pods_to_fill:
+                used_capacity = get_percent_used_capacity()
+                logging.info(f"### used capacity %age = {used_capacity}")
+                if used_capacity <= percent_required_filled:
+                    filler_executor.submit(filler, each_pod)
+                    logging.info(f"#### Ran copy operation on pod {each_pod.name}. copy_iter # {copy_iter}")
+                else:
+                    logging.info(f"############ Cluster filled to the expected capacity {percent_required_filled}")
+                    cluster_filled = True
+                    filler_executor.shutdown(wait=False)
+                    break
+            if cluster_filled:
+                break
 
-        cmd3 = ""+ "mkdir /mnt/"+dir_name+"/temp"+str(dir_num)+";"\
-               "cp -r /mnt/"+ dir_name + "/temp1/."+ " /mnt/"+dir_name+"/temp"+str(dir_num)+"/. ;" + ""
-        logging.info(f"#### Command 3 is: {cmd3}")
-        fill_pod.exec_sh_cmd_on_pod(cmd3,  sh="bash")
-        logging.info("#### executed cmd3")
-        output = ct_pod.exec_ceph_cmd(ceph_cmd='rados df')
-        percent_used_capacity = (output.get('total_used')/output.get('total_space'))*100
-        dir_num += 1
-    """
-    logging.info(f"Completed cluster fill from pod {fill_pod.name}")
-    logging.info(f"Percent filled is {percent_used_capacity}")
-
-
-def check_cluster_size(size):
-    ceph_obj = CephCluster()
-    ct_pod = pod_helpers.get_ceph_tools_pod()
-    retries = 0
-    while True:
-        if ceph_obj.get_used_space(ct_pod) >= size:
-            logger.info('used space has reached...')
-            return True
-        else:
-            logger.info('rechecking.......')
-            retries += 1
-            pass
-        if retries > 20 and ceph_obj.get_used_space(ct_pod) <= 5:
-            logger.error('IOs not happening ')
-            return False
-        time.sleep(1200)
 
 def cluster_copy_ops(copy_pod): #, iterations=10):
 
@@ -103,7 +133,7 @@ def cluster_copy_ops(copy_pod): #, iterations=10):
 
     # cp ceph.tar.gz 10 times to each cpdir
     cmd = "" + "mkdir /mnt/"+ dir_name + "/copy_dir{1..10} ; " \
-               "for i in {1..10}; do cp /tmp/ceph.tar.gz /mnt/"+ dir_name + "/copy_dir$i/ceph_$i.tar.gz & done"\
+               "for i in {1..10}; do cp /mnt/ceph.tar.gz /mnt/"+ dir_name + "/copy_dir$i/ceph_$i.tar.gz & done"\
           + ""
     copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
 
@@ -143,3 +173,4 @@ def cluster_copy_ops(copy_pod): #, iterations=10):
     cmd = "" + "rm -rf /mnt/" + dir_name + "/copy_dir{1..10}" + ""
     logging.info(f"#### command to remove = {cmd}")
     copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash") #, timeout=None)
+
