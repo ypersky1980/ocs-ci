@@ -855,3 +855,92 @@ def validate_pg_balancer():
             return False
     else:
         logging.info(f"pg_balancer is not active")
+
+
+def get_child_nodes_osd_tree(node_id, osd_tree):
+    """
+        This functions finds the children of a node from the 'ceph osd tree' and returns them as list
+
+    Args:
+        node_id (int): the id of the node for which the children to be retrieved
+        osd_tree (dict): dictionary containing the output of 'ceph osd tree'
+
+    Returns:
+        List of 'children' of a given node_id
+    """
+    for i in range(len(osd_tree['nodes'])):
+        if osd_tree['nodes'][i]['id'] == node_id:
+            return osd_tree['nodes'][i]['children']
+
+
+def check_osd_tree_1az_vmware(tree_output, number_of_osds):
+    # in case of vmware, there will be only one zone as of now. The OSDs are arranged as follows:
+    # ID  CLASS WEIGHT  TYPE NAME                            STATUS REWEIGHT PRI-AFF
+    # -1       0.99326 root default
+    # -8       0.33109     rack rack0
+    # -7       0.33109         host ocs-deviceset-0-0-dktqc
+    #  1   hdd 0.33109             osd.1                        up  1.00000 1.00000
+    # There will be 3 racks - rack0, rack1, rack2.
+    # When cluster expansion is successfully done, a host and an osd are added in each rack.
+    # The number of hosts will be equal to the number osds the cluster has. Each rack can
+    # have multiple hosts but each host will have only one osd under it.
+    number_of_hosts_expected = number_of_osds/3
+    all_hosts = []
+    racks = tree_output['nodes'][0]['children']
+
+    for rack in range(len(racks)):
+        hosts = get_child_nodes_osd_tree(racks[rack], tree_output)
+        if len(hosts) != number_of_hosts_expected:
+            logging.error(f"Number of hosts under rack {racks[rack]} "
+                          f"is not matching the expected ={number_of_hosts_expected} ")
+            return False
+        else:
+            all_hosts.append(hosts)
+
+    all_hosts_flatten = [item for sublist in all_hosts for item in sublist]
+    for each_host in range(len(all_hosts_flatten)):
+        actual_num_of_osds = len(get_child_nodes_osd_tree(all_hosts_flatten[each_host], tree_output))
+        if actual_num_of_osds > 1 or actual_num_of_osds <= 0:
+            logging.error("Error. ceph osd tree is NOT formed correctly after cluster expansion")
+            return False
+
+    logging.info(f"osd tee verification Passed")
+    return True
+
+
+def check_osd_tree_3az_aws(osd_tree, number_of_osds):
+    """
+
+    Args:
+        osd_tree:
+        number_of_osds:
+
+    Returns:
+
+    """
+    all_hosts = []
+    region = osd_tree['nodes'][0]['children']
+
+    zones = get_child_nodes_osd_tree(region[0], osd_tree)
+    for each_zone in range(len(zones)):
+        hosts_in_each_zone = get_child_nodes_osd_tree(zones[each_zone], osd_tree)
+        if len(hosts_in_each_zone) != number_of_osds / 3:  # 3 is replica_factor
+            logging.error(f"number of hosts in zone is incorrect")
+            return False
+        else:
+            all_hosts.append(hosts_in_each_zone)
+    all_hosts_flatten = [item for sublist in all_hosts for item in sublist]
+
+    for each_host in range(len(all_hosts_flatten)):
+        osd_in_each_host = get_child_nodes_osd_tree(all_hosts_flatten[each_host], osd_tree)
+        if len(osd_in_each_host) > 1 or len(osd_in_each_host) <= 0:
+            logging.error("Error. ceph osd tree is NOT formed correctly after cluster expansion")
+            return False
+
+    logging.info(f"osd tee verification Passed")
+    return True
+
+
+def check_osd_tree_1az_aws(osd_tree, number_of_osds):
+    # to do
+    pass
