@@ -112,8 +112,8 @@ class TestTier1Framework(ManageTest):
         # Create rwx-rbd pods
         pods_ios_rwx_rbd = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
                                         project=project, access_mode="RWX-BLK", pool_type='rbd')
-        # cluster_fill_io_pods = rwo_rbd_pods + rwo_cephfs_pods + rwx_cephfs_pods
-        cluster_fill_io_pods = rwo_rbd_pods # + rwo_cephfs_pods + rwx_cephfs_pods
+        cluster_fill_io_pods = rwo_rbd_pods + rwo_cephfs_pods + rwx_cephfs_pods
+        #cluster_fill_io_pods = rwo_rbd_pods # + rwo_cephfs_pods + rwx_cephfs_pods
         logging.info("#2: The DC pods are up. Running IOs from them to fill the cluster")
         logging.info(f"Will running IOs from these pods = {cluster_fill_io_pods}")
         logging.info("###########################################################################################")
@@ -148,6 +148,7 @@ class TestTier1Framework(ManageTest):
         # Get osd pods before expansion
         osd_pods_before = pod_helpers.get_osd_pods()
 
+        logging.info("#################################################### Calling add_capacity $$$$$$$$$$")
         #####################
         # Call add_capacity #
         #####################
@@ -227,21 +228,21 @@ class TestTier1Framework(ManageTest):
 
         # Make sure new pvcs and pods can be created and IOs can be run from the pods
         num_of_pvcs = 1
-        rwo_rbd_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
+        rwo_rbd_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=5,
                                     project=project, access_mode="RWO", pool_type='rbd')
 
-        rwo_cephfs_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
+        rwo_cephfs_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=5,
                                        project=project, access_mode="RWO", pool_type='cephfs')
-        rwx_cephfs_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
+        rwx_cephfs_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=5,
                                        project=project, access_mode="RWX", pool_type='cephfs')
         # Create rwx-rbd pods
-        pods_ios_rwx_rbd = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
+        pods_ios_rwx_rbd = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=5,
                                         project=project, access_mode="RWX-BLK", pool_type='rbd')
         cluster_io_pods = rwo_rbd_pods + rwo_cephfs_pods + rwx_cephfs_pods + pods_ios_rwx_rbd
         for p in cluster_io_pods:
             if p.pod_type == "rbd_block_rwx":
                 tier4_helpers.raw_block_io(p)
             else:
-                p.run_io('fs', f'{self.pvc_size - 1}G')
+                p.run_io('fs', '2G')
         logging.error("Exit criteria verification PASSED")
         logging.info("********************** COMPLETED *********************************")
