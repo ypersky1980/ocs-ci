@@ -49,6 +49,17 @@ def wrapper_s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory, iterations=
             logging.info(f"wrapper_s3_io_create_delete: iteration {i}")
 
 
+def wrapper_raw_block_ios(pod, iterations):
+    global EXPANSION_COMPLETED
+    for i in range(iterations):
+        if EXPANSION_COMPLETED:
+            logging.info(f"wrapper_raw_block_ios: Done with execution. Stopping the thread. In iteration {i-1}")
+            return True
+        else:
+            tier4_helpers.raw_block_io(pod, '100G')
+            logging.info(f"wrapper_raw_block_ios: iteration {i}")
+
+
 def check_nodes_status():
     """
     This function runs in a loop to check the status of nodes. If the node(s) are in NotReady state then an
@@ -136,9 +147,9 @@ class TestTier1Framework(ManageTest):
         for p in cluster_fill_io_pods:
             logging.info(f"calling cluster_copy_ops for {p.name}")
             if p.pod_type == "rbd_block_rwx":
-                status_cluster_ios.append(executor_run_bg_ios_ops.submit(tier4_helpers.raw_block_io, p))
+                status_cluster_ios.append(executor_run_bg_ios_ops.submit(wrapper_raw_block_ios, p, 100))
             else:
-                status_cluster_ios.append(executor_run_bg_ios_ops.submit(wrapper_cluster_copy_ops, p, 20))
+                status_cluster_ios.append(executor_run_bg_ios_ops.submit(wrapper_cluster_copy_ops, p, 50))
         # All ocs nodes are in Ready state (including master):
         node_status = executor_run_bg_ios_ops.submit(check_nodes_status)
 
@@ -210,21 +221,23 @@ class TestTier1Framework(ManageTest):
         #   Verification is different for 3 AZ and 1 AZ configs
         # Following is for vmware 1 AZ only. For AWS 3 and 1 AZ - TBD
         ct_pod = pod_helpers.get_ceph_tools_pod()
-        output = ct_pod.exec_ceph_cmd(ceph_cmd='ceph osd tree')
+        tree_output = ct_pod.exec_ceph_cmd(ceph_cmd='ceph osd tree')
         if config.ENV_DATA['platform'] == 'vsphere':
-            if not cluster_helpers.check_osd_tree_1az_vmware(output, len(osd_pods_after)):
+            if not cluster_helpers.check_osd_tree_1az_vmware(tree_output, 6):  #len(osd_pods_after))::
                  logging.info("Exit criteria verification FAILED: Incorrect ceph osd tree formation found")
+
+        aws_number_of_zones = 3
         if config.ENV_DATA['platform'] == 'AWS':
-            aws = AWS()
-            availability_zones = aws.get_availability_zones()
-            number_of_azs = len(availability_zones['AvailabilityZones'])
-            logging.info(f" AZs = {availability_zones}, total AZs = {number_of_azs}")
-            if number_of_azs == 1:
+            # parse the osd tree. if it contains a node 'rack' then it's a AWS_1AZ cluster. Else, 3 AWS_3AZ cluster
+            for i in range(len(tree_output['nodes'])):
+                if tree_output['nodes'][i]['name'] in "rack":
+                    aws_number_of_zones = 1
+            if aws_number_of_zones == 1:
                 if not cluster_helpers.check_osd_tree_1az_aws(output, len(osd_pods_after)):
-                    logging.info("Exit criteria verification FAILED: Incorrect ceph osd tree formation found")
-            if number_of_azs == 3:
+                    logging.error("Exit criteria verification FAILED: Incorrect ceph osd tree formation found")
+            else:
                 if not cluster_helpers.check_osd_tree_3az_aws(output, len(osd_pods_after)):
-                    logging.info("Exit criteria verification FAILED: Incorrect ceph osd tree formation found")
+                    logging.error("Exit criteria verification FAILED: Incorrect ceph osd tree formation found")
 
         # Make sure new pvcs and pods can be created and IOs can be run from the pods
         num_of_pvcs = 1
@@ -241,7 +254,7 @@ class TestTier1Framework(ManageTest):
         cluster_io_pods = rwo_rbd_pods + rwo_cephfs_pods + rwx_cephfs_pods + pods_ios_rwx_rbd
         for p in cluster_io_pods:
             if p.pod_type == "rbd_block_rwx":
-                tier4_helpers.raw_block_io(p)
+                tier4_helpers.raw_block_io(p, '2G')
             else:
                 p.run_io('fs', '2G')
         logging.error("Exit criteria verification PASSED")
