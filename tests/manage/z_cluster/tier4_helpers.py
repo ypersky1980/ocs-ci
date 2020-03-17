@@ -9,7 +9,17 @@ import ocs_ci.ocs.resources.pod as pod_helpers
 
 logger = logging.getLogger(__name__)
 
+
 def raw_block_io(raw_blk_pod,size='100G'):
+    """
+    Runs the block ios on pod baased raw block pvc
+    Args:
+        raw_blk_pod(pod): pod on which  block IOs should run
+        size(str): IO size
+
+    Returns:
+
+    """
     raw_blk_pod.run_io(storage_type = 'block', size = size)
     return True
 
@@ -17,9 +27,10 @@ def raw_block_io(raw_blk_pod,size='100G'):
 # move this function to cluster.py
 def get_osd_size():
     """
-    Function to get the osd size
+    Function to get the osd size in a cluster
+
     Returns:
-        The size of the osd in int
+        int: The size of the osd
 
     """
     ocp = OCP(namespace=defaults.ROOK_CLUSTER_NAMESPACE, kind=constants.STORAGECLUSTER)
@@ -33,10 +44,10 @@ def get_osd_size():
 
 def get_percent_used_capacity():
     """
-         Function to calculate the percentage of used capacity in a cluster
-    Returns:
-        The percentage of the used capacity in the cluster in int
+    Function to calculate the percentage of used capacity in a cluster
 
+    Returns:
+        int: The percentage of the used capacity in the cluster
     """
     ct_pod = pod_helpers.get_ceph_tools_pod()
     output = ct_pod.exec_ceph_cmd(ceph_cmd='rados df')
@@ -45,7 +56,8 @@ def get_percent_used_capacity():
 
 def downloader(dest_pod):
     """
-        This function downloads a wellknown file from the net on a given pod's /mnt directory
+     Downloads a wellknown file from the net on a given pod's /mnt directory
+
     Args:
         dest_pod: pod on which the file need to be downloaded
 
@@ -65,9 +77,9 @@ def downloader(dest_pod):
 
 def filler(fill_pod):
     """
-        This function copies the file downloaded by 'downloader' function in a unique directory to increase the
-        cluster space utilization. Currently it makes 30 copies of the downloaded file in a given directory which is
-        equivalent to almost 4 GiB of storage.
+    This function copies the file downloaded by 'downloader' function in a unique directory to increase the
+    cluster space utilization. Currently it makes 30 copies of the downloaded file in a given directory which is
+     equivalent to almost 4 GiB of storage.
 
     Args:
         fill_pod: the pod on which the storage space need to be filled.
@@ -89,10 +101,11 @@ def filler(fill_pod):
 
 def cluster_filler(pods_to_fill, percent_required_filled):
     """
-        This function does the following:
+    This function does the following:
         1) calls 'downloader' to download a file from the wellknown location in the net
         2) calls 'filler' to copy the above downloaded file into an unique directory on the given pod if the
         %age of the space used in cluster is lesser than the 'percent_required_filled'.
+
     Args:
         pods_to_fill(list): List of pods on which the file needs to be copied to increase the cluster space utilized
         percent_required_filled(int): The percentage to which the cluster has its storage utilized
@@ -125,7 +138,18 @@ def cluster_filler(pods_to_fill, percent_required_filled):
                 break
 
 
-def cluster_copy_ops(copy_pod): #, iterations=10):
+def cluster_copy_ops(copy_pod):
+    """
+    Function to do copy operations in a given pod. Mainly used as a background IO during cluster expansion.
+    It does of series of copy operations and verifies the data integrity of the files copied.
+
+    Args:
+        copy_pod(pod): on which copy operations need to be done
+
+    Returns:
+        Boolean: False, if there is data integrity check failure. Else, True
+
+    """
 
     dir_name = "cluster_copy_ops_" + uuid4().hex
     cmd = "" + "mkdir /mnt/"+ dir_name + ""
@@ -164,13 +188,15 @@ def cluster_copy_ops(copy_pod): #, iterations=10):
         md5sum_val_got = output.split("  ")[0]
         logger.info(f"#### md5sum obtained for pod: {copy_pod.name} is {md5sum_val_got}")
         logger.info(f"#### Expected was: {md5sum_val_expected}")
-        assert md5sum_val_got == md5sum_val_expected, \
-            f"***** md5sum check FAILED. expected: {md5sum_val_expected}, but got {md5sum_val_got}"
+        if md5sum_val_got != md5sum_val_expected:
+            logging.info(f"***** md5sum check FAILED. expected: {md5sum_val_expected}, but got {md5sum_val_got}")
+            return False
 
     logging.info("#### Data Integrity check passed")
 
     # Remove the directories - clean up
     cmd = "" + "rm -rf /mnt/" + dir_name + "/copy_dir{1..10}" + ""
     logging.info(f"#### command to remove = {cmd}")
-    copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash") #, timeout=None)
+    copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
 
+    return True
