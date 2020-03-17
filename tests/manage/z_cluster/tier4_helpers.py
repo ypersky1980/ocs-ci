@@ -89,14 +89,14 @@ def filler(fill_pod):
     """
     target_dir_name = "/mnt/cluster_fillup0_" + uuid4().hex
     mkdir_cmd = "" + "mkdir " + target_dir_name + ""
-    logging.info("#################### JUNK 1 ######################3")
     fill_pod.exec_sh_cmd_on_pod(mkdir_cmd, sh="bash")
+    logging.info(f"#### Created the dir {target_dir_name} on pod {fill_pod.name}")
 
     tee_cmd = "" + " tee " + target_dir_name + "/ceph.tar.gz{1..30} < /mnt/ceph.tar.gz >/dev/null" + ""
     #tee_cmd = "" + " tee " + target_dir_name + "/ceph.tar.gz{1..30} < /mnt/ceph.tar.gz >/dev/null &" + ""
-    logging.info("#################### JUNK 2 ######################3")
+    logging.info(f"#### Executing {tee_cmd} to fill the cluster space from pod {fill_pod.name}")
     fill_pod.exec_sh_cmd_on_pod(tee_cmd, sh="bash")
-    logging.info(f"Executed command {tee_cmd}")
+    logging.info(f"#### Executed command {tee_cmd}")
 
 
 def cluster_filler(pods_to_fill, percent_required_filled):
@@ -155,9 +155,9 @@ def cluster_copy_ops(copy_pod):
     cmd = "" + "mkdir /mnt/"+ dir_name + ""
     copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
 
-    # cp ceph.tar.gz 10 times to each cpdir
+    # cp ceph.tar.gz to 10 dirs
     cmd = "" + "mkdir /mnt/"+ dir_name + "/copy_dir{1..10} ; " \
-               "for i in {1..10}; do cp /mnt/ceph.tar.gz /mnt/"+ dir_name + "/copy_dir$i/ceph_$i.tar.gz & done"\
+               "for i in {1..10}; do cp /mnt/ceph.tar.gz /mnt/" + dir_name + "/copy_dir$i/. ; done"\
           + ""
     copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
 
@@ -178,18 +178,21 @@ def cluster_copy_ops(copy_pod):
     # to run "sed -i '/^failovermethod=/d' /etc/yum.repos.d/*.repo". This command takes at least 6-7 minutes to
     # complete. If this has to be repeated on 24 pods, then time taken to complete may vary between 20-30 minutes
     # even if they are run in parallel threads.
-    # Instead of this if we use shell command: "md5sun" directly we can reduce the time drastically. And hence we
+    # Instead of this if we use shell command: "md5sum" directly we can reduce the time drastically. And hence we
     # are not using verify_data_integrity() here.
 
     for i in range(1, 10):
 
-        cmd = "" + "md5sum /mnt/"+ dir_name + "/copy_dir" + str(i) +"/ceph_" + str(i) + ".tar.gz " + ""
+        cmd = "" + "md5sum /mnt/"+ dir_name + "/copy_dir" + str(i) + "/ceph.tar.gz" + ""
         output = copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
         md5sum_val_got = output.split("  ")[0]
         logger.info(f"#### md5sum obtained for pod: {copy_pod.name} is {md5sum_val_got}")
         logger.info(f"#### Expected was: {md5sum_val_expected}")
         if md5sum_val_got != md5sum_val_expected:
             logging.info(f"***** md5sum check FAILED. expected: {md5sum_val_expected}, but got {md5sum_val_got}")
+            cmd = "" + "ls -lR /mnt" + ""
+            output = copy_pod.exec_sh_cmd_on_pod(cmd, sh="bash")
+            logging.info(f"ls -lR /mnt output = {output}")
             return False
 
     logging.info("#### Data Integrity check passed")
