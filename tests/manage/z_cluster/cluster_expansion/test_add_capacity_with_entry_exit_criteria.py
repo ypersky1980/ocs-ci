@@ -34,7 +34,7 @@ def wrapper_cluster_copy_ops(copy_pod, iterations=1):
             logging.info(f"wrapper_cluster_copy_ops : Done with execution. Stopping the thread. In iteration {i-1}")
             return True
         else:
-            tier4_helpers.cluster_copy_ops(copy_pod)
+            assert tier4_helpers.cluster_copy_ops(copy_pod), "Data integrity check FAILED"
             logging.info(f"wrapper_cluster_copy_ops : iteration {i-1}")
 
 
@@ -219,7 +219,6 @@ class TestTier1Framework(ManageTest):
 
         # 'ceph osd tree' should show the new osds under right nodes/hosts
         #   Verification is different for 3 AZ and 1 AZ configs
-        # Following is for vmware 1 AZ only. For AWS 3 and 1 AZ - TBD
         ct_pod = pod_helpers.get_ceph_tools_pod()
         tree_output = ct_pod.exec_ceph_cmd(ceph_cmd='ceph osd tree')
         if config.ENV_DATA['platform'] == 'vsphere':
@@ -259,3 +258,8 @@ class TestTier1Framework(ManageTest):
                 p.run_io('fs', '2G')
         logging.error("Exit criteria verification PASSED")
         logging.info("********************** COMPLETED *********************************")
+
+
+
+def junk():
+
