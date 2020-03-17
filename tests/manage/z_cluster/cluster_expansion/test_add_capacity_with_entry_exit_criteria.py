@@ -15,7 +15,6 @@ from ocs_ci.ocs import cluster as cluster_helpers
 from ocs_ci.ocs.resources import storage_cluster
 from ocs_ci.utility.utils import ceph_health_check
 from ocs_ci.framework import config
-from ocs_ci.utility.aws import AWS
 
 # Add capacity needs to happen with background operations/IOs in progress. In order to do this we use threads. Each
 # thread runs a function responsible to do the background operations/IOs while add capacity operation is in progress.
@@ -31,18 +30,18 @@ def wrapper_cluster_copy_ops(copy_pod, iterations=1):
     global EXPANSION_COMPLETED
     for i in range(iterations):
         if EXPANSION_COMPLETED:
-            logging.info(f"wrapper_cluster_copy_ops : Done with execution. Stopping the thread. In iteration {i-1}")
+            logging.info(f"wrapper_cluster_copy_ops : Done with execution. Stopping the thread. In iteration {i}")
             return True
         else:
             assert tier4_helpers.cluster_copy_ops(copy_pod), "Data integrity check FAILED"
-            logging.info(f"wrapper_cluster_copy_ops : iteration {i-1}")
+            logging.info(f"wrapper_cluster_copy_ops : iteration {i}")
 
 
 def wrapper_s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory, iterations=1):
     global EXPANSION_COMPLETED
     for i in range(iterations):
         if EXPANSION_COMPLETED:
-            logging.info(f"wrapper_s3_io_create_delete: Done with execution. Stopping the thread. In iteration {i-1}")
+            logging.info(f"wrapper_s3_io_create_delete: Done with execution. Stopping the thread. In iteration {i}")
             return True
         else:
             s3_io_create_delete(mcg_obj, awscli_pod, bucket_factory)
@@ -53,7 +52,7 @@ def wrapper_raw_block_ios(pod, iterations):
     global EXPANSION_COMPLETED
     for i in range(iterations):
         if EXPANSION_COMPLETED:
-            logging.info(f"wrapper_raw_block_ios: Done with execution. Stopping the thread. In iteration {i-1}")
+            logging.info(f"wrapper_raw_block_ios: Done with execution. Stopping the thread. In iteration {i}")
             return True
         else:
             tier4_helpers.raw_block_io(pod, '100G')
@@ -69,7 +68,7 @@ def check_nodes_status():
     logging.info(f"Entered check_nodes_status. Exp_cmp = {EXPANSION_COMPLETED}")
     for i in range(200):
         if EXPANSION_COMPLETED:
-            logging.info(f"check_nodes_status : Done with execution. Stopping the thread. In iteration {i-1}")
+            logging.info(f"check_nodes_status : Done with execution. Stopping the thread. In iteration {i}")
             return True
         else:
             node.wait_for_nodes_status(node_names=None, status=constants.NODE_READY, timeout=5)
@@ -80,7 +79,7 @@ def check_nodes_status():
     argnames=["percent_to_fill"],
     argvalues=[
         pytest.param(
-            *[1],
+            *[10],
             marks=pytest.mark.polarion_id("OCS-2131")
         ),
      ]
@@ -112,7 +111,7 @@ class TestTier1Framework(ManageTest):
         # Create the namespace under which this test will executeq:
         project = project_factory()
 
-        num_of_pvcs = 9 # total pvc created will be 'num_of_pvcs' * 4 types of pvcs(rbd-rwo,rwx & cephfs-rwo,rwx)
+        num_of_pvcs = 9  # total pvc created will be 'num_of_pvcs' * 4 types of pvcs(rbd-rwo,rwx & cephfs-rwo,rwx)
 
         rwo_rbd_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
                                     project=project, access_mode="RWO", pool_type='rbd')
@@ -125,8 +124,7 @@ class TestTier1Framework(ManageTest):
                                         project=project, access_mode="RWX-BLK", pool_type='rbd')
         cluster_fill_io_pods = rwo_rbd_pods + rwo_cephfs_pods + rwx_cephfs_pods
         #cluster_fill_io_pods = rwo_rbd_pods # + rwo_cephfs_pods + rwx_cephfs_pods
-        logging.info("#2: The DC pods are up. Running IOs from them to fill the cluster")
-        logging.info(f"Will running IOs from these pods = {cluster_fill_io_pods}")
+        logging.info("The DC pods are up. Running IOs from them to fill the cluster")
         logging.info("###########################################################################################")
 
         tier4_helpers.cluster_filler(cluster_fill_io_pods, percent_to_fill)
@@ -160,6 +158,7 @@ class TestTier1Framework(ManageTest):
         osd_pods_before = pod_helpers.get_osd_pods()
 
         logging.info("#################################################### Calling add_capacity $$$$$$$$$$")
+
         #####################
         # Call add_capacity #
         #####################
@@ -168,6 +167,8 @@ class TestTier1Framework(ManageTest):
         pod = OCP(
             kind=constants.POD, namespace=config.ENV_DATA['cluster_namespace']
         )
+
+        # New osd (all) pods corresponding to the additional capacity should be in running state
         pod.wait_for_resource(
             timeout=1200,
             condition=constants.STATUS_RUNNING,
@@ -178,52 +179,50 @@ class TestTier1Framework(ManageTest):
         #################################
         # Exit criteria verification:   #
         #################################
-        EXPANSION_COMPLETED = True
 
-        # 'ceph -s' should show HEALTH_OK
-        # assert ceph_health_check(defaults.ROOK_CLUSTER_NAMESPACE), \
-        #     "Exit criteria verification FAILED: Cluster unhealthy"
+        EXPANSION_COMPLETED = True
 
         # No ocs pods should get restarted unexpectedly
         #   Get restart count of ocs pods after expansion and see any pods got restated
         restart_count_after = pod_helpers.get_pod_restarts_count(defaults.ROOK_CLUSTER_NAMESPACE)
-        if restart_count_before == restart_count_after:
-            logging.info("Exit criteria verification FAILED: One or more pods got restarted")
+        assert sum(restart_count_before.values()) == sum(restart_count_after.values()), \
+            "Exit criteria verification FAILED: One or more pods got restarted"
 
         # Make sure right number of OSDs are added:
         #   Get osd pods after expansion
         osd_pods_after = pod_helpers.get_osd_pods()
         number_of_osds_added = len(osd_pods_after) - len(osd_pods_before)
+        logging.info(f"### number_of_osds_added = {number_of_osds_added}, "
+                     f"before = {len(osd_pods_before)}, after = {len(osd_pods_after) }")
         #   If the difference b/w updated count of osds and old osd count is not 3 then expansion failed
-        if number_of_osds_added == 3:
-            logging.info("Exit criteria verification FAILED: osd count mismatch")
+        assert number_of_osds_added == 3, "Exit criteria verification FAILED: osd count mismatch"
 
         # The newly added capacity takes into effect at the storage level
         ct_pod = pod_helpers.get_ceph_tools_pod()
         output = ct_pod.exec_ceph_cmd(ceph_cmd='rados df')
         actual_total_space = output.get('total_space')
         expected_total_space = storage_cluster.get_osd_size() * len(osd_pods_after)
-        if actual_total_space == expected_total_space:
-            logging.info("Exit criteria verification FAILED: Expected capacity mismatch")
+        logging.info(f"actual_total_space = {actual_total_space}, expected_total_space = {expected_total_space}"
+                     f", space output == {output} ")
 
-        # New osd (all) pods corresponding to the additional capacity should be in running state
-        if not storage_cluster.check_osd_pods_added(osd_pods_before, osd_pods_after, 3):
-            logging.info("Exit criteria verification FAILED: New osd pods are not shown")
+        assert actual_total_space == expected_total_space, \
+            "Exit criteria verification FAILED: Expected capacity mismatch"
 
         # IOs should not stop, No OCP/OCS nodes should go to NotReady state,No OCP/OCS nodes should
         # go to NotReady state
         if status_noobaa_io.result() and node_status.result():
             for cluster_ios in status_cluster_ios:
-                if not cluster_ios.running():
-                    logging.info("Exit criteria verification FAILED: IOs failed during expansion")
+                logging.info(f"cluster_ios.running = {cluster_ios.running()}")
+                assert cluster_ios.running(), "Exit criteria verification FAILED: IOs failed during expansion"
 
         # 'ceph osd tree' should show the new osds under right nodes/hosts
         #   Verification is different for 3 AZ and 1 AZ configs
         ct_pod = pod_helpers.get_ceph_tools_pod()
         tree_output = ct_pod.exec_ceph_cmd(ceph_cmd='ceph osd tree')
+        logging.info(f"### OSD tree output = {tree_output}")
         if config.ENV_DATA['platform'] == 'vsphere':
-            if not cluster_helpers.check_osd_tree_1az_vmware(tree_output, 6):  #len(osd_pods_after))::
-                 logging.info("Exit criteria verification FAILED: Incorrect ceph osd tree formation found")
+            assert cluster_helpers.check_osd_tree_1az_vmware(tree_output, len(osd_pods_after)),\
+                "Exit criteria verification FAILED: Incorrect ceph osd tree formation found"
 
         aws_number_of_zones = 3
         if config.ENV_DATA['platform'] == 'AWS':
@@ -232,11 +231,11 @@ class TestTier1Framework(ManageTest):
                 if tree_output['nodes'][i]['name'] in "rack":
                     aws_number_of_zones = 1
             if aws_number_of_zones == 1:
-                if not cluster_helpers.check_osd_tree_1az_aws(output, len(osd_pods_after)):
-                    logging.error("Exit criteria verification FAILED: Incorrect ceph osd tree formation found")
+                assert cluster_helpers.check_osd_tree_1az_aws(output, len(osd_pods_after)), \
+                    "Exit criteria verification FAILED: Incorrect ceph osd tree formation found"
             else:
-                if not cluster_helpers.check_osd_tree_3az_aws(output, len(osd_pods_after)):
-                    logging.error("Exit criteria verification FAILED: Incorrect ceph osd tree formation found")
+                assert cluster_helpers.check_osd_tree_3az_aws(output, len(osd_pods_after)), \
+                    "Exit criteria verification FAILED: Incorrect ceph osd tree formation found"
 
         # Make sure new pvcs and pods can be created and IOs can be run from the pods
         num_of_pvcs = 1
@@ -256,10 +255,10 @@ class TestTier1Framework(ManageTest):
                 tier4_helpers.raw_block_io(p, '2G')
             else:
                 p.run_io('fs', '2G')
+
+        # 'ceph -s' should show HEALTH_OK
+        assert ceph_health_check(defaults.ROOK_CLUSTER_NAMESPACE), \
+            "Exit criteria verification FAILED: Cluster unhealthy"
+
         logging.error("Exit criteria verification PASSED")
         logging.info("********************** COMPLETED *********************************")
-
-
-
-def junk():
-
