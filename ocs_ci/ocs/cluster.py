@@ -859,21 +859,45 @@ def validate_pg_balancer():
 
 def get_child_nodes_osd_tree(node_id, osd_tree):
     """
-        This functions finds the children of a node from the 'ceph osd tree' and returns them as list
+    This functions finds the children of a node from the 'ceph osd tree' and returns them as list
 
     Args:
         node_id (int): the id of the node for which the children to be retrieved
         osd_tree (dict): dictionary containing the output of 'ceph osd tree'
 
     Returns:
-        List of 'children' of a given node_id
+        list: of 'children' of a given node_id
     """
     for i in range(len(osd_tree['nodes'])):
         if osd_tree['nodes'][i]['id'] == node_id:
             return osd_tree['nodes'][i]['children']
 
 
-def check_osd_tree_1az_vmware(tree_output, number_of_osds):
+def check_osds_in_hosts_osd_tree(all_hosts, osd_tree):
+    for each_host in range(len(all_hosts)):
+        osd_in_each_host = get_child_nodes_osd_tree(all_hosts[each_host], osd_tree)
+        print("osd = ", osd_in_each_host)
+        if len(osd_in_each_host) > 1 or len(osd_in_each_host) <= 0:
+            logging.error("Error. ceph osd tree is NOT formed correctly after cluster expansion")
+            return False
+
+    logging.info(f"osd tree verification Passed")
+    return True
+
+
+def check_osd_tree_1az_vmware(osd_tree, number_of_osds):
+    """
+    Checks whether an OSD tree is created/modified correctly. This can be used as a verification step for
+    deployment and cluster expansion tests.
+    This function is specifically for ocs cluster created on 1 AZ VMWare setup
+
+    Args:
+        osd_tree(dict): Dictionary of the values which represent 'osd tree'.
+        number_of_osds(int): total number of osds in the cluster
+
+    Returns:
+        Boolean: True, if the ceph osd tree is formed correctly. Else False
+    """
     # in case of vmware, there will be only one zone as of now. The OSDs are arranged as follows:
     # ID  CLASS WEIGHT  TYPE NAME                            STATUS REWEIGHT PRI-AFF
     # -1       0.99326 root default
@@ -886,10 +910,10 @@ def check_osd_tree_1az_vmware(tree_output, number_of_osds):
     # have multiple hosts but each host will have only one osd under it.
     number_of_hosts_expected = number_of_osds/3
     all_hosts = []
-    racks = tree_output['nodes'][0]['children']
+    racks = osd_tree['nodes'][0]['children']
 
     for rack in range(len(racks)):
-        hosts = get_child_nodes_osd_tree(racks[rack], tree_output)
+        hosts = get_child_nodes_osd_tree(racks[rack], osd_tree)
         if len(hosts) != number_of_hosts_expected:
             logging.error(f"Number of hosts under rack {racks[rack]} "
                           f"is not matching the expected ={number_of_hosts_expected} ")
@@ -898,25 +922,21 @@ def check_osd_tree_1az_vmware(tree_output, number_of_osds):
             all_hosts.append(hosts)
 
     all_hosts_flatten = [item for sublist in all_hosts for item in sublist]
-    for each_host in range(len(all_hosts_flatten)):
-        actual_num_of_osds = len(get_child_nodes_osd_tree(all_hosts_flatten[each_host], tree_output))
-        if actual_num_of_osds > 1 or actual_num_of_osds <= 0:
-            logging.error("Error. ceph osd tree is NOT formed correctly after cluster expansion")
-            return False
-
-    logging.info(f"osd tee verification Passed")
-    return True
+    return check_osds_in_hosts_osd_tree(all_hosts_flatten, osd_tree)
 
 
 def check_osd_tree_3az_aws(osd_tree, number_of_osds):
     """
+    Checks whether an OSD tree is created/modified correctly. This can be used as a verification step for
+    deployment and cluster expansion tests.
+    This function is specifically for ocs cluster created on 3 AZ AWS config
 
     Args:
-        osd_tree:
-        number_of_osds:
+        osd_tree(dict): Dictionary of the values which represent 'osd tree'.
+        number_of_osds(int): total number of osds in the cluster
 
     Returns:
-
+        Boolean: True, if the ceph osd tree is formed correctly. Else False
     """
     all_hosts = []
     region = osd_tree['nodes'][0]['children']
@@ -929,18 +949,42 @@ def check_osd_tree_3az_aws(osd_tree, number_of_osds):
             return False
         else:
             all_hosts.append(hosts_in_each_zone)
+
     all_hosts_flatten = [item for sublist in all_hosts for item in sublist]
 
-    for each_host in range(len(all_hosts_flatten)):
-        osd_in_each_host = get_child_nodes_osd_tree(all_hosts_flatten[each_host], osd_tree)
-        if len(osd_in_each_host) > 1 or len(osd_in_each_host) <= 0:
-            logging.error("Error. ceph osd tree is NOT formed correctly after cluster expansion")
-            return False
-
-    logging.info(f"osd tee verification Passed")
-    return True
+    return check_osds_in_hosts_osd_tree(all_hosts_flatten, osd_tree)
 
 
 def check_osd_tree_1az_aws(osd_tree, number_of_osds):
-    # to do
-    pass
+    """
+    Checks whether an OSD tree is created/modified correctly. This can be used as a verification step for
+    deployment and cluster expansion tests.
+    This function is specifically for ocs cluster created on 1 AZ AWS config
+
+    Args:
+        osd_tree(dict): Dictionary of the values which represent 'osd tree'.
+        number_of_osds(int): total number of osds in the cluster
+
+    Returns:
+        Boolean: True, if the ceph osd tree is formed correctly. Else False
+
+    """
+    all_hosts = []
+    region = osd_tree['nodes'][0]['children']
+    zones = get_child_nodes_osd_tree(region[0], osd_tree)
+    racks = get_child_nodes_osd_tree(zones[0], osd_tree)
+    print("racks = ", racks)
+    if len(racks) != 3:
+        logging.error("Expected 3 racks but got {len(racks)}")
+    for each_rack in range(len(racks)):
+        hosts_in_each_rack = get_child_nodes_osd_tree(racks[each_rack], osd_tree)
+        if len(hosts_in_each_rack) != number_of_osds / 3:  # 3 is replica_factor
+            logging.error("number of hosts in rack is incorrect")
+            return False
+        else:
+            print("adding host...", hosts_in_each_rack)
+            all_hosts.append(hosts_in_each_rack)
+    all_hosts_flatten = [item for sublist in all_hosts for item in sublist]
+
+    return check_osds_in_hosts_osd_tree(all_hosts_flatten, osd_tree)
+
