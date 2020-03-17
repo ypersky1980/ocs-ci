@@ -1183,8 +1183,10 @@ def get_noobaa_pods(noobaa_label=constants.NOOBAA_APP_LABEL, namespace=None):
 def get_pod_restarts_count(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
     """
     Gets the dictionary of pod and its restart count for all the pods in a given namespace
+
     Returns:
-        Dict, dictionary of pod name and its corresponding restart count
+        dict: dictionary of pod name and its corresponding restart count
+
     """
     list_of_pods = get_all_pods(namespace)
     restart_dict = {}
@@ -1201,7 +1203,10 @@ def get_pod_restarts_count(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
 def check_pods_in_running_state(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
     """
     checks whether all the pods in a given namespace are in Running state or not
-    Returns: True, if all pods in Running state. False, otherwise
+
+    Returns:
+        Boolean: True, if all pods in Running state. False, otherwise
+
     """
     ret_val = True
     list_of_pods = get_all_pods(namespace)
@@ -1214,4 +1219,3 @@ def check_pods_in_running_state(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
                 logging.error(f"The pod {p.name} is in {status} state. Expected = Running")
                 ret_val = False
     return ret_val
-
