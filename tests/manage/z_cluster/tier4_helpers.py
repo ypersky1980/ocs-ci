@@ -132,7 +132,7 @@ def cluster_filler(pods_to_fill, percent_required_filled):
                 else:
                     logging.info(f"############ Cluster filled to the expected capacity {percent_required_filled}")
                     cluster_filled = True
-                    filler_executor.shutdown(wait=False)
+                    # filler_executor.shutdown(wait=False)
                     break
             if cluster_filled:
                 break
