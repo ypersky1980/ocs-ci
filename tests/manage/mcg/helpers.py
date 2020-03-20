@@ -135,12 +135,14 @@ def del_objects(uploaded_objects_paths, awscli_pod, mcg_obj):
             secrets=[mcg_obj.access_key_id, mcg_obj.access_key, mcg_obj.s3_endpoint]
         )
 
+
 def get_full_path_object(downloaded_files, bucket_name):
     uploaded_objects_paths = []
     for uploaded_filename in downloaded_files:
         uploaded_objects_paths.append(f"s3://{bucket_name}/{uploaded_filename}")
 
     return uploaded_objects_paths
+
 
 def obc_io_create_delete(mcg_obj, awscli_pod, bucket_factory):
     dir = '/aws/' + uuid4().hex + '_original/'
