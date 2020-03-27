@@ -103,7 +103,7 @@ def check_nodes_status():
     argnames=["percent_to_fill"],
     argvalues=[
         pytest.param(
-            *[4],
+            *[11],
             marks=pytest.mark.polarion_id("OCS-2131")
         ),
      ]
@@ -139,7 +139,7 @@ class TestTier1Framework(ManageTest):
 
 
 
-        num_of_pvcs = 2  # total pvc created will be 'num_of_pvcs' * 4 types of pvcs(rbd-rwo,rwx & cephfs-rwo,rwx)
+        num_of_pvcs = 9  # total pvc created will be 'num_of_pvcs' * 4 types of pvcs(rbd-rwo,rwx & cephfs-rwo,rwx)
 
         rwo_rbd_pods = multi_dc_pod(num_of_pvcs=num_of_pvcs, pvc_size=175,
                                     project=project, access_mode="RWO", pool_type='rbd')
@@ -190,7 +190,7 @@ class TestTier1Framework(ManageTest):
         # Get the total space in cluster before expansion
         ct_pod = pod_helpers.get_ceph_tools_pod()
         output = ct_pod.exec_ceph_cmd(ceph_cmd='ceph osd df')
-        total_space_b4_expansion = output.get('summary').get('total_kb')
+        total_space_b4_expansion = int(output.get('summary').get('total_kb'))
         logging.info(f"total_space_b4_expansion == {total_space_b4_expansion}")
 
         logging.info("#################################################### Calling add_capacity $$$$$$$$$$")
@@ -245,22 +245,24 @@ class TestTier1Framework(ManageTest):
         # The newly added capacity takes into effect at the storage level
         ct_pod = pod_helpers.get_ceph_tools_pod()
         output = ct_pod.exec_ceph_cmd(ceph_cmd='ceph osd df')
-        total_space_after_expansion = output.get('summary').get('total_kb')
-        osd_size = output.get('nodes')[0].get('kb')
+        total_space_after_expansion = int(output.get('summary').get('total_kb'))
+        osd_size = int(output.get('nodes')[0].get('kb'))
         expanded_space = osd_size * 3  # 3 OSDS are added of size = 'osd_size'
         logging.info(f"space output == {output} ")
-        logging.info(f"osd size == {output.get('nodes')[0].get('kb')} ")
-        logging.info(f"total_space_after_expansion == {output.get('summary').get('total_kb')} ")
-        assert total_space_after_expansion != total_space_b4_expansion + expanded_space, \
+        logging.info(f"osd size == {osd_size} ")
+        logging.info(f"total_space_after_expansion == {total_space_after_expansion} ")
+        expected_total_space_after_expansion = total_space_b4_expansion + expanded_space
+        logging.info(f"expected_total_space_after_expansion == {expected_total_space_after_expansion} ")
+        assert total_space_after_expansion == expected_total_space_after_expansion, \
             "Exit criteria verification FAILED: Expected capacity mismatch"
 
         logging.info("Exit criteria verification Success: Newly added capacity took into effect")
 
         # IOs should not stop, No OCP/OCS nodes should go to NotReady state,No OCP/OCS nodes should
         # go to NotReady state
-        if status_noobaa_io.result(timeout=300) and node_status.result(timeout=300):
+        if status_noobaa_io.result(timeout=900) and node_status.result(timeout=900):
             for cluster_ios in status_cluster_ios:
-                assert cluster_ios.result(timeout=300), \
+                assert cluster_ios.result(timeout=900), \
                     "Exit criteria verification FAILED: IOs did not complete"
 
         logging.info("Exit criteria verification Success: IOs completed successfully")
