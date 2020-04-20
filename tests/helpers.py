@@ -165,7 +165,7 @@ def create_pod(
             pod_data['spec']['volumes'][0]['persistentVolumeClaim']['claimName'] = pvc_name
 
     if interface_type == constants.CEPHBLOCKPOOL and raw_block_pv:
-        if pod_dict_path == constants.FEDORA_DC_YAML:
+        if pod_dict == constants.FEDORA_DC_YAML:
             temp_dict = [
                 {'devicePath': raw_block_device, 'name': pod_data.get('spec').get(
                     'template').get('spec').get('volumes')[0].get('name')}
@@ -300,7 +300,7 @@ def default_ceph_block_pool():
     return constants.DEFAULT_BLOCKPOOL
 
 
-def create_ceph_block_pool(pool_name=None, failure_domain=None, verify=True):
+def create_ceph_block_pool(pool_name=None):
     """
     Create a Ceph block pool
     ** This method should not be used anymore **
@@ -308,9 +308,6 @@ def create_ceph_block_pool(pool_name=None, failure_domain=None, verify=True):
 
     Args:
         pool_name (str): The pool name to create
-        failure_domain (str): Failure domain name
-        verify (bool): True to verify the pool exists after creation,
-                       False otherwise
 
     Returns:
         OCS: An OCS instance for the Ceph block pool
@@ -322,14 +319,13 @@ def create_ceph_block_pool(pool_name=None, failure_domain=None, verify=True):
         )
     )
     cbp_data['metadata']['namespace'] = defaults.ROOK_CLUSTER_NAMESPACE
-    cbp_data['spec']['failureDomain'] = failure_domain or get_failure_domin()
+    cbp_data['spec']['failureDomain'] = get_failure_domin()
     cbp_obj = create_resource(**cbp_data)
     cbp_obj.reload()
 
-    if verify:
-        assert verify_block_pool_exists(cbp_obj.name), (
-            f"Block pool {cbp_obj.name} does not exist"
-        )
+    assert verify_block_pool_exists(cbp_obj.name), (
+        f"Block pool {cbp_obj.name} does not exist"
+    )
     return cbp_obj
 
 
@@ -1086,14 +1082,13 @@ def measure_pvc_creation_time(interface, pvc_name):
     return total.total_seconds()
 
 
-def measure_pvc_creation_time_bulk(interface, pvc_name_list, wait_time=60):
+def measure_pvc_creation_time_bulk(interface, pvc_name_list):
     """
     Measure PVC creation time of bulk PVC based on logs.
 
     Args:
         interface (str): The interface backed the PVC
         pvc_name_list (list): List of PVC Names for measuring creation time
-        wait_time (int): Seconds to wait before collecting CSI log
 
     Returns:
         pvc_dict (dict): Dictionary of pvc_name with creation time.
@@ -1101,8 +1096,6 @@ def measure_pvc_creation_time_bulk(interface, pvc_name_list, wait_time=60):
     """
     # Get the correct provisioner pod based on the interface
     pod_name = pod.get_csi_provisioner_pod(interface)
-    # due to some delay in CSI log generation added wait
-    time.sleep(wait_time)
     # get the logs from the csi-provisioner containers
     logs = pod.get_pod_logs(pod_name[0], 'csi-provisioner')
     logs += pod.get_pod_logs(pod_name[1], 'csi-provisioner')
@@ -1129,14 +1122,13 @@ def measure_pvc_creation_time_bulk(interface, pvc_name_list, wait_time=60):
     return pvc_dict
 
 
-def measure_pv_deletion_time_bulk(interface, pv_name_list, wait_time=60):
+def measure_pv_deletion_time_bulk(interface, pv_name_list):
     """
     Measure PV deletion time of bulk PV, based on logs.
 
     Args:
         interface (str): The interface backed the PV
         pv_name_list (list): List of PV Names for measuring deletion time
-        wait_time (int): Seconds to wait before collecting CSI log
 
     Returns:
         pv_dict (dict): Dictionary of pv_name with deletion time.
@@ -1144,8 +1136,6 @@ def measure_pv_deletion_time_bulk(interface, pv_name_list, wait_time=60):
     """
     # Get the correct provisioner pod based on the interface
     pod_name = pod.get_csi_provisioner_pod(interface)
-    # due to some delay in CSI log generation added wait
-    time.sleep(wait_time)
     # get the logs from the csi-provisioner containers
     logs = pod.get_pod_logs(pod_name[0], 'csi-provisioner')
     logs += pod.get_pod_logs(pod_name[1], 'csi-provisioner')
@@ -1515,37 +1505,6 @@ def craft_s3_command(mcg_obj, cmd):
     else:
         base_command = (
             f"aws s3 --no-verify-ssl --no-sign-request "
-        )
-        string_wrapper = ''
-
-    return f"{base_command}{cmd}{string_wrapper}"
-
-
-def craft_s3_api_command(mcg_obj, cmd):
-    """
-    Crafts the AWS cli S3 API level commands
-
-    Args:
-        mcg_obj: An MCG object containing the MCG S3 connection credentials
-        cmd: The AWSCLI API command to run
-
-    Returns:
-        str: The crafted command, ready to be executed on the pod
-
-    """
-    if mcg_obj:
-        base_command = (
-            f"sh -c \"AWS_ACCESS_KEY_ID={mcg_obj.access_key_id} "
-            f"AWS_SECRET_ACCESS_KEY={mcg_obj.access_key} "
-            f"AWS_DEFAULT_REGION={mcg_obj.region} "
-            f"aws s3api "
-            f"--endpoint={mcg_obj.s3_endpoint} "
-            f"--no-verify-ssl "
-        )
-        string_wrapper = "\""
-    else:
-        base_command = (
-            f"aws s3api --no-verify-ssl --no-sign-request "
         )
         string_wrapper = ''
 

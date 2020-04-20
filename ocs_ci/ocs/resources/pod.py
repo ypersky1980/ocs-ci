@@ -116,7 +116,6 @@ class Pod(OCS):
         Raises:
             Exception: In case of exception from FIO
         """
-        logger.info(f"Waiting for FIO results from pod {self.name}")
         try:
             result = self.fio_thread.result(FIO_TIMEOUT)
             if result:
@@ -250,7 +249,7 @@ class Pod(OCS):
 
     def run_io(
         self, storage_type, size, io_direction='rw', rw_ratio=75,
-        jobs=1, runtime=60, depth=4, rate='1m', rate_process='poisson', fio_filename=None
+        jobs=1, runtime=60, depth=4, rate='16k', rate_process='poisson', fio_filename=None
     ):
         """
         Execute FIO on a pod
@@ -273,7 +272,7 @@ class Pod(OCS):
             jobs (int): Number of jobs to execute FIO
             runtime (int): Number of seconds IO should run for
             depth (int): IO depth
-            rate (str): rate of IO default 1m, e.g. 16k
+            rate (str): rate of IO default 16k, e.g. 16k
             rate_process (str): kind of rate process default poisson, e.g. poisson
             fio_filename(str): Name of fio file created on app pod's mount point
         """
@@ -399,7 +398,7 @@ def get_all_pods(
     if selector:
         pods_new = [
             pod for pod in pods if
-            pod['metadata'].get('labels', {}).get(selector_label) in selector
+            pod['metadata']['labels'].get(selector_label) in selector
         ]
         pods = pods_new
     pod_objs = [Pod(**pod) for pod in pods]
@@ -593,6 +592,7 @@ def get_fio_rw_iops(pod_obj):
     Args:
         pod_obj (Pod): The object of the pod
     """
+    logging.info(f"Waiting for IO results from pod {pod_obj.name}")
     fio_result = pod_obj.get_fio_results()
     logging.info(f"FIO output: {fio_result}")
     logging.info("IOPs after FIO:")
@@ -707,27 +707,10 @@ def get_pods_having_label(label, namespace):
         namespace (str): Namespace in which to be looked up
 
     Return:
-        list: of pods info
-
+        dict: of pod info
     """
     ocp_pod = OCP(kind=constants.POD, namespace=namespace)
     pods = ocp_pod.get(selector=label).get('items')
-    return pods
-
-
-def get_deployments_having_label(label, namespace):
-    """
-    Fetches deployment resources with given label in given namespace
-
-    Args:
-        label (str): label which deployments might have
-        namespace (str): Namespace in which to be looked up
-
-    Return:
-        list: deployment OCP instances
-    """
-    ocp_deployment = OCP(kind=constants.DEPLOYMENT, namespace=namespace)
-    pods = ocp_deployment.get(selector=label).get('items')
     return pods
 
 
@@ -805,46 +788,6 @@ def get_osd_pods(osd_label=constants.OSD_APP_LABEL, namespace=None):
     osds = get_pods_having_label(osd_label, namespace)
     osd_pods = [Pod(**osd) for osd in osds]
     return osd_pods
-
-
-def get_osd_prepare_pods(
-    osd_prepare_label=constants.OSD_PREPARE_APP_LABEL, namespace=defaults.ROOK_CLUSTER_NAMESPACE
-):
-    """
-    Fetches info about osd prepare pods in the cluster
-
-    Args:
-        osd_prepare_label (str): label associated with osd prepare pods
-            (default: constants.OSD_PREPARE_APP_LABEL)
-        namespace (str): Namespace in which ceph cluster lives
-            (default: defaults.ROOK_CLUSTER_NAMESPACE)
-
-    Returns:
-        list: OSD prepare pod objects
-    """
-    namespace = namespace or config.ENV_DATA['cluster_namespace']
-    osds = get_pods_having_label(osd_prepare_label, namespace)
-    osd_pods = [Pod(**osd) for osd in osds]
-    return osd_pods
-
-
-def get_osd_deployments(osd_label=constants.OSD_APP_LABEL, namespace=None):
-    """
-    Fetches info about osd deployments in the cluster
-
-    Args:
-        osd_label (str): label associated with osd deployments
-            (default: defaults.OSD_APP_LABEL)
-        namespace (str): Namespace in which ceph cluster lives
-            (default: defaults.ROOK_CLUSTER_NAMESPACE)
-
-    Returns:
-        list: OSD deployment OCS instances
-    """
-    namespace = namespace or config.ENV_DATA['cluster_namespace']
-    osds = get_deployments_having_label(osd_label, namespace)
-    osd_deployments = [OCS(**osd) for osd in osds]
-    return osd_deployments
 
 
 def get_pod_count(label, namespace=None):
@@ -1149,7 +1092,7 @@ def get_operator_pods(operator_label=constants.OPERATOR_LABEL, namespace=None):
     return operator_pods
 
 
-def upload(pod_name, localpath, remotepath, namespace=None):
+def upload(pod_name, localpath, remotepath):
     """
     Upload a file to pod
 
@@ -1159,8 +1102,7 @@ def upload(pod_name, localpath, remotepath, namespace=None):
         remotepath (str): Target path on the pod
 
     """
-    namespace = namespace or constants.DEFAULT_NAMESPACE
-    cmd = f"oc -n {namespace} cp {os.path.expanduser(localpath)} {pod_name}:{remotepath}"
+    cmd = f"oc cp {os.path.expanduser(localpath)} {pod_name}:{remotepath}"
     run_cmd(cmd)
 
 
@@ -1238,19 +1180,42 @@ def get_noobaa_pods(noobaa_label=constants.NOOBAA_APP_LABEL, namespace=None):
     return noobaa_pods
 
 
-def wait_for_dc_app_pods_to_reach_running_state(dc_pod_obj):
+def get_pod_restarts_count(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
     """
-    Wait for DC app pods to reach running state
+    Gets the dictionary of pod and its restart count for all the pods in a given namespace
 
-    Args:
-        dc_pod_obj (list): list of dc app pod objects
+    Returns:
+        dict: dictionary of pod name and its corresponding restart count
 
     """
-    for pod_obj in dc_pod_obj:
-        name = pod_obj.get_labels().get('name')
-        dpod_list = get_all_pods(selector_label=f"name={name}", wait=True)
-        for dpod in dpod_list:
-            if '-1-deploy' not in dpod.name:
-                helpers.wait_for_resource_state(
-                    dpod, constants.STATUS_RUNNING, timeout=1200
-                )
+    list_of_pods = get_all_pods(namespace)
+    restart_dict = {}
+    ocp_pod_obj = OCP(kind=constants.POD, namespace=namespace)
+    for p in list_of_pods:
+        # pod_dict = p.get()
+        # we don't want to compare osd-prepare and canary pods as they get created freshly when an osd need to be added.
+        if "rook-ceph-osd-prepare" not in p.name and "rook-ceph-drain-canary" not in p.name:
+            restart_dict[p.name] = int(ocp_pod_obj.get_resource(p.name, 'RESTARTS'))
+    logging.info(f"get_pod_restarts_count: restarts dict = {restart_dict}")
+    return restart_dict
+
+
+def check_pods_in_running_state(namespace=defaults.ROOK_CLUSTER_NAMESPACE):
+    """
+    checks whether all the pods in a given namespace are in Running state or not
+
+    Returns:
+        Boolean: True, if all pods in Running state. False, otherwise
+
+    """
+    ret_val = True
+    list_of_pods = get_all_pods(namespace)
+    ocp_pod_obj = OCP(kind=constants.POD, namespace=namespace)
+    for p in list_of_pods:
+        # we don't want to compare osd-prepare and canary pods as they get created freshly when an osd need to be added.
+        if "rook-ceph-osd-prepare" not in p.name and "rook-ceph-drain-canary" not in p.name:
+            status = ocp_pod_obj.get_resource(p.name, 'STATUS')
+            if status not in "Running":
+                logging.error(f"The pod {p.name} is in {status} state. Expected = Running")
+                ret_val = False
+    return ret_val
