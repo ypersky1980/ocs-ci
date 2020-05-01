@@ -1737,9 +1737,12 @@ def delete_objs_parallel(obj_list):
     """
     threads = list()
     for obj in obj_list:
-        process = threading.Thread(target=obj.delete)
-        process.start()
-        threads.append(process)
+        process1 = threading.Thread(target=obj.delete)
+        process2 = threading.Thread(target=obj.ocp.wait_for_delete(obj.name))
+        process1.start()
+        process2.start()
+        threads.append(process1)
+        threads.append(process1)
     for process in threads:
         process.join()
     return True

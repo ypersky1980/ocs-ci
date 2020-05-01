@@ -780,3 +780,6 @@ OCS_PROVISIONERS = [
 bucket_website_action_list = ['PutBucketWebsite', 'GetBucketWebsite', 'PutObject']
 bucket_version_action_list = ['PutBucketVersioning', 'GetBucketVersioning']
 object_version_action_list = ['PutObject', 'GetObjectVersion', 'DeleteObjectVersion']
+
+# Scale constants
+SCALE_NODE_SELECTOR = {'nodetype': 'app-scale'}
