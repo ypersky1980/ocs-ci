@@ -18,7 +18,7 @@ class FioPodScale(object):
 
     """
     def __init__(
-        self, kind='Pod', pod_dict_path=constants.NGINX_POD_YAML,
+        self, kind='deploymentconfig', pod_dict_path=constants.NGINX_POD_YAML,
         node_selector=constants.SCALE_NODE_SELECTOR
     ):
         """
@@ -53,10 +53,7 @@ class FioPodScale(object):
         """
         Set dc_deployment True or False based on Kind
         """
-        if self.kind == 'DeploymentConfig':
-            self.dc_deployment = True
-        else:
-            self.dc_deployment = False
+        self.dc_deployment = True if self.kind == 'deploymentconfig' else False
 
     def create_and_set_namespace(self):
         """
@@ -67,8 +64,9 @@ class FioPodScale(object):
         self.namespace = self.namespace_list[-1].namespace
         if self.dc_deployment:
             self.sa_name = helpers.create_serviceaccount(self.namespace)
+            self.sa_name = self.sa_name.name
             helpers.add_scc_policy(
-                sa_name=self.sa_name.name, namespace=self.namespace
+                sa_name=self.sa_name, namespace=self.namespace
             )
         else:
             self.sa_name = None
@@ -107,7 +105,7 @@ class FioPodScale(object):
         # Create pods with above pvc list
         cephfs_pods = helpers.create_pods_parallel(
             cephfs_pvcs, self.namespace, constants.CEPHFS_INTERFACE,
-            pod_dict_path=str(self.pod_dict_path), sa_name=self.sa_name.name,
+            pod_dict_path=self.pod_dict_path, sa_name=self.sa_name,
             dc_deployment=self.dc_deployment, node_selector=self.node_selector
         )
         rbd_rwo_pvc, rbd_rwx_pvc = ([] for i in range(2))
@@ -118,12 +116,12 @@ class FioPodScale(object):
                 rbd_rwo_pvc.append(pvc_obj)
         rbd_rwo_pods = helpers.create_pods_parallel(
             rbd_rwo_pvc, self.namespace, constants.CEPHBLOCKPOOL,
-            pod_dict_path=str(self.pod_dict_path), sa_name=self.sa_name.name,
+            pod_dict_path=self.pod_dict_path, sa_name=self.sa_name,
             dc_deployment=self.dc_deployment, node_selector=self.node_selector
         )
         rbd_rwx_pods = helpers.create_pods_parallel(
             rbd_rwx_pvc, self.namespace, constants.CEPHBLOCKPOOL,
-            pod_dict_path=str(self.pod_dict_path), sa_name=self.sa_name.name,
+            pod_dict_path=self.pod_dict_path, sa_name=self.sa_name,
             dc_deployment=self.dc_deployment, raw_block_pv=True,
             node_selector=self.node_selector
         )
@@ -132,7 +130,6 @@ class FioPodScale(object):
 
         # Appending all the pod_obj to list
         pod_objs.extend(temp_pod_objs + rbd_rwx_pods)
-
         fio_size = self.get_size_based_on_cls_usage()
         fio_rate = self.get_rate_based_on_cls_iops()
 
@@ -243,12 +240,15 @@ class FioPodScale(object):
         scale_count (int): Scale pod+pvc count
         pods_per_iter (int): Number of PVC-POD to be created per PVC type
                 eg: If 2 then 8 PVC+POD will be created with 2 each of 4 PVC types
+                    This value should be in-between 2-5
         instance_type (str): Type of aws instance
         io_runtime (sec): Fio run time in seconds
         start_io (bool): If True start IO else don't
 
         """
         all_pod_obj = list()
+        if not 1 <= pods_per_iter <= 5:
+            raise UnexpectedBehaviour("Pods_per_iter value should be in-between 1-5")
         if config.ENV_DATA['deployment_type'] == 'ipi' and config.ENV_DATA['platform'].lower() == 'aws':
             # Create machineset for app worker nodes, which will create one app worker node
             self.ms_name = machine.create_custom_machineset(instance_type=instance_type, zone='a')
@@ -381,5 +381,5 @@ def add_worker_based_on_cpu_utilization(
         else:
             logging.info("Enough resource available for more pod creation")
             return False
-    elif config.ENV_DATA['deployment_type'] == 'upi' and config.ENV_DATA['platform'].lower() == 'vshpere':
+    elif config.ENV_DATA['deployment_type'] == 'upi' and config.ENV_DATA['platform'].lower() == 'vsphere':
         pass
