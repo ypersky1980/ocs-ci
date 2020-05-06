@@ -10,7 +10,7 @@ from ocs_ci.framework.testlib import scale, E2ETest, ignore_leftovers
 log = logging.getLogger(__name__)
 
 
-@pytest.fixture(scope='class')
+@pytest.fixture(scope='session')
 def fioscale(request):
 
     # Create RipSaw Operator

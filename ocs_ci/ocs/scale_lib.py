@@ -18,7 +18,7 @@ class FioPodScale(object):
 
     """
     def __init__(
-        self, kind='deploymentconfig', pod_dict_path=constants.NGINX_POD_YAML,
+        self, kind='deploymentconfig', pod_dict_path=constants.FEDORA_DC_YAML,
         node_selector=constants.SCALE_NODE_SELECTOR
     ):
         """
@@ -89,7 +89,7 @@ class FioPodScale(object):
         rbd_sc = helpers.default_storage_class(constants.CEPHBLOCKPOOL)
         cephfs_sc = helpers.default_storage_class(constants.CEPHFILESYSTEM)
         pvc_size = f"{random.randrange(5, 105, 5)}Gi"
-        logging.info(f"Create {pods_per_iter} PVCs and PODs")
+        logging.info(f"Create {pods_per_iter * 4} PVCs and PODs")
         cephfs_pvcs = helpers.create_multiple_pvc_parallel(
             sc_obj=cephfs_sc, namespace=self.namespace, number_of_pvc=pods_per_iter,
             size=pvc_size, access_modes=[constants.ACCESS_MODE_RWO, constants.ACCESS_MODE_RWX]
@@ -212,6 +212,7 @@ class FioPodScale(object):
         # Check for IOPs limit percentage of cluster and accordingly suggest fio rate param
         cls_obj = cluster.CephCluster()
         iops = cls_obj.get_iops_percentage(osd_size=osd_size)
+        logger.info(f"Printing iops from cluster {iops}")
         if custom_iops_dict:
             iops_dict = custom_iops_dict
         else:
@@ -263,13 +264,6 @@ class FioPodScale(object):
             if scale_count <= len(all_pod_obj):
                 logger.info(f"Scaled {scale_count} pvc and pods")
 
-                # TODO: Check either cluster is in rebalance state.
-                # # Check for pg_balancer
-                # obj = CephCluster()
-                # if not obj.get_rebalance_status():
-                #     logger.warn(f"Cluster health is in WARN, rebalance in-progress")
-                #     logger.info(f"Wait for rebalance to complete to validate pg_balancer")
-                #     return False
                 if cluster.validate_pg_balancer():
                     logging.info("OSD consumption and PG distribution is good to continue")
                 else:
@@ -277,7 +271,6 @@ class FioPodScale(object):
 
                 break
             else:
-                logger.info(f"Create {pods_per_iter} pods & pvc")
                 pod_obj, pvc_obj = self.create_multi_pvc_pod(
                     pods_per_iter, io_runtime, start_io
                 )
@@ -295,14 +288,14 @@ class FioPodScale(object):
                     # Check for ceph cluster OSD utilization
                     if not cluster.validate_osd_utilization(osd_used=75):
                         logging.info("Cluster OSD utilization is below 75%")
-                    elif cluster.validate_osd_utilization(osd_used=80):
+                    elif not cluster.validate_osd_utilization(osd_used=83):
                         logger.warn("Cluster OSD utilization is above 75%")
                     else:
                         raise CephHealthException("Cluster OSDs are near full")
 
                     # Check for 200 pods per namespace
                     pod_objs = pod.get_all_pods(namespace=self.namespace_list[-1].namespace)
-                    if len(pod_objs) >= 200:
+                    if len(pod_objs) >= 3:
                         self.create_and_set_namespace()
 
                 except UnexpectedBehaviour:
@@ -319,8 +312,8 @@ class FioPodScale(object):
         """
         # Delete all pods, pvcs and namespaces
         for namespace in self.namespace_list:
-            helpers.delete_objs_parallel(pod.get_all_pods(namespace=namespace.name))
-            helpers.delete_objs_parallel(pvc.get_all_pvc_objs(namespace=namespace.name))
+            helpers.delete_objs_parallel(obj_list=pod.get_all_pods(namespace=namespace.namespace))
+            helpers.delete_objs_parallel(obj_list=pvc.get_all_pvc_objs(namespace=namespace.namespace))
             namespace.delete()
         # Delete machineset which will delete respective nodes too
         if self.ms_name:

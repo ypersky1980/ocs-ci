@@ -517,18 +517,12 @@ class CephCluster(object):
             Total IOPS in the cluster
 
         """
-
-        ceph_status = self.get_ceph_status()
-        for item in ceph_status.split("\n"):
-            if 'client' in item:
-                iops = re.findall(r'\d+\.+\d+|\d\d*', item.strip())
-                iops = iops[2::1]
-                if len(iops) == 2:
-                    iops_in_cluster = float(iops[0]) + float(iops[1])
-                else:
-                    iops_in_cluster = float(iops[0])
-                logging.info(f"IOPS in the cluster is {iops_in_cluster}")
-                return iops_in_cluster
+        ceph_status = self.get_ceph_status(format='json-pretty')
+        read_ops = ceph_status['pgmap']['read_op_per_sec']
+        write_ops = ceph_status['pgmap']['write_op_per_sec']
+        cluster_iops = read_ops + write_ops
+        logger.info(f"Cluster iops {cluster_iops}")
+        return cluster_iops
 
     def get_iops_percentage(self, osd_size=2):
         """
@@ -560,21 +554,12 @@ class CephCluster(object):
 
         """
 
-        ceph_status = self.get_ceph_status()
-        for item in ceph_status.split("\n"):
-            if 'client' in item:
-                throughput_data = item.strip('client: ').split(",")
-                throughput_data = throughput_data[:2:1]
-                # Converting all B/s and KiB/s to MiB/s
-                conversion = {'B/s': 0.000000976562, 'KiB/s': 0.000976562, 'MiB/s': 1}
-                throughput = 0
-                for val in throughput_data:
-                    throughput += [
-                        float(re.findall(r'\d+', val)[0]) * conversion[key]
-                        for key in conversion.keys() if key in val
-                    ][0]
-                    logger.info(f"The throughput is {throughput} MiB/s")
-                return throughput
+        ceph_status = self.get_ceph_status(format='json-pretty')
+        read_bytes = ceph_status['pgmap']['read_bytes_sec']
+        write_bytes = ceph_status['pgmap']['write_bytes_sec']
+        throughput_bytes = read_bytes + write_bytes
+        throughput_mb = float(throughput_bytes * 0.000000976562)
+        return throughput_mb
 
     def get_throughput_percentage(self):
         """
