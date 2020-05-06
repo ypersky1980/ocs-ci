@@ -846,3 +846,7 @@ COMPATABILITY_MODE = "physicalMode"
 # OS
 RHEL_OS = "RHEL"
 RHCOS = "RHCOS"
+
+# files
+REMOTE_FILE_URL = "http://download.ceph.com/tarballs/ceph_15.1.0.orig.tar.gz"
+FILE_PATH = '/tmp/ceph.tar.gz'
