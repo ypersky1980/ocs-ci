@@ -3,6 +3,7 @@ import threading
 import random
 
 from tests import helpers
+from ocs_ci.ocs.ocp import OCP
 from ocs_ci.framework import config
 from ocs_ci.ocs.resources import pod, pvc, storage_cluster
 from ocs_ci.ocs import constants, cluster, machine, node
@@ -88,7 +89,8 @@ class FioPodScale(object):
         """
         rbd_sc = helpers.default_storage_class(constants.CEPHBLOCKPOOL)
         cephfs_sc = helpers.default_storage_class(constants.CEPHFILESYSTEM)
-        pvc_size = f"{random.randrange(5, 105, 5)}Gi"
+        # pvc_size = f"{random.randrange(5, 105, 5)}Gi"
+        pvc_size = f"{random.randrange(15, 105, 5)}Gi"
         logging.info(f"Create {pods_per_iter * 4} PVCs and PODs")
         cephfs_pvcs = helpers.create_multiple_pvc_parallel(
             sc_obj=cephfs_sc, namespace=self.namespace, number_of_pvc=pods_per_iter,
@@ -134,6 +136,7 @@ class FioPodScale(object):
         fio_rate = self.get_rate_based_on_cls_iops()
 
         # Start IO
+        import time
         if start_io:
             threads = list()
             for pod_obj in temp_pod_objs:
@@ -145,6 +148,7 @@ class FioPodScale(object):
                 )
                 process.start()
                 threads.append(process)
+                time.sleep(30)
             for pod_obj in rbd_rwx_pods:
                 process = threading.Thread(
                     target=pod_obj.run_io, kwargs={
@@ -154,6 +158,7 @@ class FioPodScale(object):
                 )
                 process.start()
                 threads.append(process)
+                time.sleep(30)
             for process in threads:
                 process.join()
 
@@ -295,7 +300,7 @@ class FioPodScale(object):
 
                     # Check for 200 pods per namespace
                     pod_objs = pod.get_all_pods(namespace=self.namespace_list[-1].namespace)
-                    if len(pod_objs) >= 3:
+                    if len(pod_objs) >= 4:
                         self.create_and_set_namespace()
 
                 except UnexpectedBehaviour:
@@ -312,12 +317,45 @@ class FioPodScale(object):
         """
         # Delete all pods, pvcs and namespaces
         for namespace in self.namespace_list:
-            helpers.delete_objs_parallel(obj_list=pod.get_all_pods(namespace=namespace.namespace))
-            helpers.delete_objs_parallel(obj_list=pvc.get_all_pvc_objs(namespace=namespace.namespace))
-            namespace.delete()
+            delete_objs_parallel(
+                obj_list=pod.get_all_pods(namespace=namespace.namespace),
+                namespace=namespace.namespace, kind=self.kind
+            )
+            delete_objs_parallel(
+                obj_list=pvc.get_all_pvc_objs(namespace=namespace.namespace),
+                namespace=namespace.namespace, kind=constants.PVC
+            )
+            ocp = OCP(kind=constants.NAMESPACE)
+            ocp.delete(resource_name=namespace.namespace)
         # Delete machineset which will delete respective nodes too
         if self.ms_name:
             machine.delete_custom_machineset(self.ms_name)
+
+
+def delete_objs_parallel(obj_list, namespace, kind):
+    """
+    Function to delete objs specified in list
+    Args:
+        obj_list(list): List can be obj of pod, pvc, etc
+        namespace(str): Namespace where the obj belongs to
+        kind(str): Obj Kind
+
+    """
+    ocp = OCP(kind=kind, namespace=namespace)
+    threads = list()
+    for obj in obj_list:
+        process1 = threading.Thread(
+            target=ocp.delete, kwargs={'resource_name': f"{obj.name}"}
+        )
+        process2 = threading.Thread(
+            target=ocp.wait_for_delete, kwargs={'resource_name': f"{obj.name}"}
+        )
+        process1.start()
+        process2.start()
+        threads.append(process1)
+        threads.append(process2)
+    for process in threads:
+        process.join()
 
 
 def add_required_osd_count(total_osd_nos=3):

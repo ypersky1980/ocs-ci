@@ -13,13 +13,13 @@ log = logging.getLogger(__name__)
 @pytest.fixture(scope='session')
 def fioscale(request):
 
-    # Create RipSaw Operator
+    # Scale FIO pods in the cluster
     fioscale = FioPodScale(
         kind=constants.DEPLOYMENTCONFIG, pod_dict_path=constants.FEDORA_DC_YAML,
         node_selector=constants.SCALE_NODE_SELECTOR
     )
     fioscale.create_scale_pods(
-        scale_count=1500, pods_per_iter=2, io_runtime=120,
+        scale_count=1500, pods_per_iter=5, io_runtime=120,
         start_io=True
     )
 
