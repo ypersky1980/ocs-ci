@@ -1046,11 +1046,7 @@ def run_io_in_background(request, pvc_factory_session, pod_factory_session):
     Run IO during the test execution
     """
     if config.RUN.get('io_in_bg'):
-        io_load_param = config.RUN.get('io_load')
-        if io_load_param:
-            io_load = int(io_load_param) * 0.01
-        else:
-            io_load = 0.3
+        io_load = int(config.RUN.get('io_load')) * 0.01
         io_bg_logs = config.RUN.get('bg_io_logs')
         log.info(
             "\n===================================================\n"
