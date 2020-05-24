@@ -30,7 +30,7 @@ from ocs_ci.ocs.resources.cloud_manager import CloudManager
 from ocs_ci.ocs.resources.mcg import MCG
 from ocs_ci.ocs.resources.mcg_bucket import S3Bucket, OCBucket, CLIBucket
 from ocs_ci.ocs.resources.ocs import OCS
-from ocs_ci.ocs.resources.pod import get_rgw_pod, get_ceph_tools_pod
+from ocs_ci.ocs.resources.pod import get_rgw_pod
 from ocs_ci.ocs.resources.pvc import PVC
 from ocs_ci.ocs.version import get_ocs_version, report_ocs_version
 from ocs_ci.ocs.cluster_load import ClusterLoad
@@ -1075,11 +1075,12 @@ def run_io_in_background(request, pvc_factory_session, pod_factory_session):
             "is going to be determined by the cluster capabilities according to its "
             "throughput limit"
         )
-        cl_load_obj = ClusterLoad()
-        cluster_limit, target_tp = cl_load_obj.reach_cluster_load_percentage_in_throughput(
-            pvc_factory=pvc_factory_session, pod_factory=pod_factory_session,
+        cl_load_obj = ClusterLoad(
+            pvc_factory=pvc_factory_session,
+            pod_factory=pod_factory_session,
             target_percentage=io_load
         )
+        cl_load_obj.reach_cluster_load_percentage_in_throughput()
 
         set_test_status('running')
 
@@ -1102,27 +1103,10 @@ def run_io_in_background(request, pvc_factory_session, pod_factory_session):
             it calls again reach_cluster_load_percentage_in_throughput()
 
             """
-            cl_load_obj.__init__(propagate_logs=io_bg_logs)
+            cl_load_obj.logger.propagate = io_bg_logs
             while get_test_status() == 'running':
                 try:
-                    cl_load_obj.cl_obj.toolbox = get_ceph_tools_pod()
-                    if cl_load_obj.cl_obj.is_health_ok():
-                        average_tp = cl_load_obj.cl_obj.calc_average_throughput(samples=16)
-                        if average_tp < target_tp * 0.6:
-                            log.warning(
-                                "\n=================================================="
-                                "==================================================\n"
-                                "Cluster throughput dropped below 60% of the target "
-                                "throughput for background IO load. Re-loading IOs"
-                                "\n=================================================="
-                                "=================================================="
-                            )
-                            _, _ = cl_load_obj.reach_cluster_load_percentage_in_throughput(
-                                pvc_factory=pvc_factory_session,
-                                pod_factory=pod_factory_session,
-                                target_percentage=io_load,
-                                cluster_limit=cluster_limit
-                            )
+                    cl_load_obj.ensure_cluster_load()
                 # Any type of exception should be caught and we should continue.
                 # We don't want any test to fail
                 except Exception:

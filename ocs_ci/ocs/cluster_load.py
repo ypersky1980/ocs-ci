@@ -10,6 +10,7 @@ from ocs_ci.ocs import constants
 from ocs_ci.ocs.cluster import (
     CephCluster, get_osd_pods_memory_sum, get_percent_used_capacity
 )
+from ocs_ci.ocs.resources.pod import get_ceph_tools_pod
 
 
 class ClusterLoad:
@@ -18,21 +19,26 @@ class ClusterLoad:
 
     """
 
-    def __init__(self, propagate_logs=True):
+    def __init__(self, pvc_factory, pod_factory, target_percentage):
         """
         Initializer for ClusterLoad
 
         Args:
-            propagate_logs (bool): True for logging, False otherwise
+            pvc_factory (function): A call to pvc_factory function
+            pod_factory (function): A call to pod_factory function
+            target_percentage (float): The percentage of cluster load that is required.
+                The value should be greater than 0 and smaller than 1
 
         """
         self.logger = logging.getLogger(__name__)
-        self.logger.propagate = propagate_logs
+        self.logger.propagate = True
         self.cl_obj = CephCluster()
+        self.pvc_factory = pvc_factory
+        self.pod_factory = pod_factory
+        self.target_percentage = target_percentage
+        self.target_throughput = None
 
-    def reach_cluster_load_percentage_in_throughput(
-        self, pvc_factory, pod_factory, target_percentage=0.5, cluster_limit=None
-    ):
+    def reach_cluster_load_percentage_in_throughput(self, ):
         """
         Reach the cluster throughput limit and then drop to the given target percentage.
         The number of pods needed for the desired target percentage is determined by
@@ -44,23 +50,10 @@ class ClusterLoad:
         This leaves the number of pods needed running IO for cluster throughput to
         be around the desired percentage.
 
-        Args:
-            pvc_factory (function): A call to pvc_factory function
-            pod_factory (function): A call to pod_factory function
-            target_percentage (float): The percentage of cluster load that is required.
-                The value should be greater than 0 and smaller than 1
-            cluster_limit (float): The cluster pre-known throughput limit in Mb/s.
-                If passed, the function will calculate the target throughput based on it
-                multiplied by 'target_percentage'
-
-        Returns:
-            tuple: The cluster limit in Mb/s (float) and the current throughput
-                in Mb/s (float)
-
         """
-        if not 0.1 < target_percentage < 0.95:
+        if not 0.1 < self.target_percentage < 0.95:
             self.logger.warning(
-                f"The target percentage is {target_percentage * 100}% which is not "
+                f"The target percentage is {self.target_percentage * 100}% which is not "
                 f"within the accepted range. Therefore, IO will not be started"
             )
             return
@@ -79,21 +72,17 @@ class ClusterLoad:
         io_file_size = f"{pvc_size - 1}G"
 
         def create_pvc_and_pod():
-            pvc_obj = pvc_factory(
+            pvc_obj = self.pvc_factory(
                 interface=constant.CEPHBLOCKPOOL, size=pvc_size,
                 volume_mode=constants.VOLUME_MODE_BLOCK
             )
             pvc_objs.append(pvc_obj)
-            pod_obj = pod_factory(
+            pod_obj = self.pod_factory(
                 pvc=pvc_obj, pod_dict_path=constants.CSI_RBD_RAW_BLOCK_POD_YAML,
                 raw_block_pv=True
             )
             pod_objs.append(pod_obj)
             return pod_obj
-
-        target_throughput = None
-        if cluster_limit:
-            target_throughput = cluster_limit * target_percentage
 
         pod_obj = create_pvc_and_pod()
         pod_obj.run_io(
@@ -107,14 +96,14 @@ class ClusterLoad:
         current_throughput = self.cl_obj.calc_average_throughput()
 
         target_tp_reached_msg = None
-        if target_throughput:
+        if self.target_throughput:
             target_tp_reached_msg = (
                 f"\n=============================================\n"
                 f"Current throughput, {current_throughput} Mb/s, surpassed"
-                f"\nthe target throughput ({target_throughput} Mb/s)"
+                f"\nthe target throughput ({self.target_throughput} Mb/s)"
                 f"\n============================================="
             )
-            if current_throughput > target_throughput * 1.1:
+            if current_throughput > self.target_throughput * 1.1:
                 self.logger.info(target_tp_reached_msg)
                 limit_reached = True
 
@@ -126,7 +115,7 @@ class ClusterLoad:
             self.logger.info(
                 f"\n==========================================================\n"
                 f"Determining the cluster throughput limit. Once determined,"
-                f"\nIOs will be reduced to load at {target_percentage * 100}% "
+                f"\nIOs will be reduced to load at {self.target_percentage * 100}% "
                 f"of the cluster limit"
                 f"\n=========================================================="
             )
@@ -159,7 +148,7 @@ class ClusterLoad:
                 f"\n==========================================================="
             )
 
-            if not target_throughput:
+            if not self.target_throughput:
                 if current_throughput > 20:
                     tp_diff = (current_throughput / previous_throughput * 100) - 100
                     self.logger.info(
@@ -181,12 +170,12 @@ class ClusterLoad:
                             f"\n==========================================="
                         )
             else:
-                if current_throughput > target_throughput:
+                if current_throughput > self.target_throughput:
                     self.logger.info(target_tp_reached_msg)
                     limit_reached = True
             if time.time() > time_before + time_to_wait:
                 msg = "determine the cluster throughput limit"
-                if target_throughput:
+                if self.target_throughput:
                     msg = "reach the cluster throughput percentage"
                 self.logger.warning(
                     f"\n===============================================\n"
@@ -219,7 +208,7 @@ class ClusterLoad:
             cluster_used_space = get_percent_used_capacity()
             if cluster_used_space > 50:
                 msg = "limit"
-                if target_throughput:
+                if self.target_throughput:
                     msg = "target percentage"
                 self.logger.warning(
                     f"\n===============================================\n"
@@ -231,7 +220,7 @@ class ClusterLoad:
                 limit_reached = True
                 cluster_limit = current_throughput
 
-        target_throughput = cluster_limit * target_percentage
+        target_throughput = cluster_limit * self.target_percentage
         self.logger.info(f"The target throughput is {target_throughput} Mb/s")
         self.logger.info(f"The current throughput is {current_throughput} Mb/s")
         self.logger.info(
@@ -263,4 +252,24 @@ class ClusterLoad:
             f"\nIOs is {len(pod_objs)} at a load of {current_throughput} Mb/s"
             f"\n=============================================="
         )
-        return cluster_limit, current_throughput
+        self.target_throughput = current_throughput
+
+    def ensure_cluster_load(self):
+        """
+        Ensure cluster is loaded by checking the clsuter throuput and comparing
+        it to the target load set by `reach_cluster_load_percentage_in_throughput`
+
+        """
+        self.cl_obj.toolbox = get_ceph_tools_pod()
+        if self.cl_obj.is_health_ok():
+            average_tp = self.cl_obj.calc_average_throughput(samples=16)
+            if average_tp < self.target_throughput * 0.6:
+                self.logger.warning(
+                    "\n=================================================="
+                    "==================================================\n"
+                    "Cluster throughput dropped below 60% of the target "
+                    "throughput for background IO load. Re-loading IOs"
+                    "\n=================================================="
+                    "=================================================="
+                )
+                self.reach_cluster_load_percentage_in_throughput()
