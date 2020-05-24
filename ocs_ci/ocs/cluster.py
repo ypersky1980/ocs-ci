@@ -600,7 +600,7 @@ class CephCluster(object):
         logging.info(f"The throughput percentage of the cluster is {throughput_percentage}%")
         return throughput_percentage
 
-    def calc_average_throughput(self, samples=5):
+    def calc_average_throughput(self, samples=8):
         """
         Calculate the cluster average throughput out of a few samples
 

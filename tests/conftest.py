@@ -1076,7 +1076,7 @@ def run_io_in_background(request, pvc_factory_session, pod_factory_session):
             "throughput limit"
         )
         cl_load_obj = ClusterLoad()
-        cluster_limit, current_tp = cl_load_obj.reach_cluster_load_percentage_in_throughput(
+        cluster_limit, target_tp = cl_load_obj.reach_cluster_load_percentage_in_throughput(
             pvc_factory=pvc_factory_session, pod_factory=pod_factory_session,
             target_percentage=io_load
         )
@@ -1107,9 +1107,17 @@ def run_io_in_background(request, pvc_factory_session, pod_factory_session):
                 try:
                     cl_load_obj.cl_obj.toolbox = get_ceph_tools_pod()
                     if cl_load_obj.cl_obj.is_health_ok():
-                        average_tp = cl_load_obj.cl_obj.calc_average_throughput(samples=10)
-                        if average_tp < current_tp * 0.5:
-                            cl_load_obj.reach_cluster_load_percentage_in_throughput(
+                        average_tp = cl_load_obj.cl_obj.calc_average_throughput(samples=16)
+                        if average_tp < target_tp * 0.6:
+                            log.warning(
+                                "\n=================================================="
+                                "==================================================\n"
+                                "Cluster throughput dropped below 60% of the target "
+                                "throughput for background IO load. Re-loading IOs"
+                                "\n=================================================="
+                                "=================================================="
+                            )
+                            _, _ = cl_load_obj.reach_cluster_load_percentage_in_throughput(
                                 pvc_factory=pvc_factory_session,
                                 pod_factory=pod_factory_session,
                                 target_percentage=io_load,
