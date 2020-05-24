@@ -256,7 +256,7 @@ class ClusterLoad:
 
     def ensure_cluster_load(self):
         """
-        Ensure cluster is loaded by checking the clsuter throuput and comparing
+        Ensure cluster is loaded by checking the cluster throughput and comparing
         it to the target load set by `reach_cluster_load_percentage_in_throughput`
 
         """
