@@ -204,7 +204,7 @@ class ClusterLoad:
             "to reach cluster throughput utilization that is more or less the "
             "target throughput percentage"
         )
-        while current_throughput > (target_throughput * 1.05) and len(self.dc_objs) > 1:
+        while current_throughput > (target_throughput * 1.1) and len(self.dc_objs) > 1:
             self.delete_pod_and_pvc()
             current_throughput = self.cl_obj.calc_average_throughput()
             logger.info(
