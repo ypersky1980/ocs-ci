@@ -39,19 +39,23 @@ class ClusterLoad:
         self.sa_factory = sa_factory
         self.pod_factory = pod_factory
         self.target_percentage = target_percentage
-        self.pvc_obj = None
         self.pod_objs = list()
         self.pvc_objs = list()
         self.pvc_size = int(get_osd_pods_memory_sum() * 0.5)
         self.io_file_size = f"{self.pvc_size - 1}G"
 
-    def create_dc_pod(self):
+    def create_fio_pod(self):
         """
-        Create a service account and a DeploymentConfig
+        Create a PVC, a service account and a DeploymentConfig of FIO pod
 
         """
-        service_account = self.sa_factory(self.pvc_objs[-1].project)
+        pvc_obj = self.pvc_factory(
+            interface=constants.CEPHBLOCKPOOL, size=self.pvc_size,
+            volume_mode=constants.VOLUME_MODE_BLOCK
+        )
+        service_account = self.sa_factory(pvc_obj.project)
 
+        self.pvc_objs.append(pvc_obj)
         # Set new arguments with the updated file size to be used for
         # DeploymentConfig of FIO pod creation
         fio_dc_data = templating.load_yaml(constants.FIO_DC_YAML)
@@ -59,11 +63,13 @@ class ClusterLoad:
         new_args = [arg for arg in current_args if "--filesize=" not in arg]
         new_args.append(f"--filesize={self.io_file_size}")
         pod_obj = self.pod_factory(
-            pvc=self.pvc_objs[-1], pod_dict_path=constants.FIO_DC_YAML,
+            pvc=pvc_obj, pod_dict_path=constants.FIO_DC_YAML,
             raw_block_pv=True, deployment_config=True,
             service_account=service_account, command_args=new_args
         )
         self.pod_objs.append(pod_obj)
+        logger.info(f"Waiting 20 seconds for the IOs to kick-in on pod {pod_obj.name}")
+        time.sleep(20)
 
     def delete_pod_and_pvc(self):
         """
@@ -114,14 +120,7 @@ class ClusterLoad:
                 f"IOs on the newly created pod is {current_throughput} Mb/s"
             )
 
-            self.pvc_objs.append(
-                self.pvc_factory(
-                    interface=constants.CEPHBLOCKPOOL, size=self.pvc_size,
-                    volume_mode=constants.VOLUME_MODE_BLOCK
-                )
-            )
-            self.create_dc_pod()
-            time.sleep(15)
+            self.create_fio_pod()
 
             previous_throughput = current_throughput
             current_throughput = self.cl_obj.calc_average_throughput()
