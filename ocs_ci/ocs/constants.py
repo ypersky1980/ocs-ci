@@ -466,6 +466,9 @@ FIO_IO_PARAMS_YAML = os.path.join(
 FIO_IO_RW_PARAMS_YAML = os.path.join(
     TEMPLATE_FIO_DIR, "workload_io_rw.yaml"
 )
+FIO_DC_YAML = os.path.join(
+    TEMPLATE_FIO_DIR, "fio_dc.yaml"
+)
 
 # Openshift infra yamls:
 RSYNC_POD_YAML = os.path.join(

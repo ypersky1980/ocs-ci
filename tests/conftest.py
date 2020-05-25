@@ -1,6 +1,5 @@
 import logging
 import os
-import time
 import random
 import tempfile
 import textwrap
@@ -30,7 +29,7 @@ from ocs_ci.ocs.resources.cloud_manager import CloudManager
 from ocs_ci.ocs.resources.mcg import MCG
 from ocs_ci.ocs.resources.mcg_bucket import S3Bucket, OCBucket, CLIBucket
 from ocs_ci.ocs.resources.ocs import OCS
-from ocs_ci.ocs.resources.pod import get_rgw_pod
+from ocs_ci.ocs.resources.pod import get_rgw_pod, delete_deploymentconfig
 from ocs_ci.ocs.resources.pvc import PVC
 from ocs_ci.ocs.version import get_ocs_version, report_ocs_version
 from ocs_ci.ocs.cluster_load import ClusterLoad
@@ -664,7 +663,12 @@ def pod_factory_fixture(request, pvc_factory):
         custom_data=None,
         status=constants.STATUS_RUNNING,
         pod_dict_path=None,
-        raw_block_pv=False
+        raw_block_pv=False,
+        deployment_config=False,
+        service_account=None,
+        replica_count=1,
+        command=None,
+        command_args=None
     ):
         """
         Args:
@@ -680,10 +684,20 @@ def pod_factory_fixture(request, pvc_factory):
             pod_dict_path (str): YAML path for the pod.
             raw_block_pv (bool): True for creating raw block pv based pod,
                 False otherwise.
+            deployment_config (bool): True for DeploymentConfig creation,
+                False otherwise
+            service_account (OCS): Service account object, in case DeploymentConfig
+                is to be created
+            replica_count (int): The replica count for deployment config
+            command (list): The command to be executed on the pod
+            command_args (list): The arguments to be sent to the command running
+                on the pod
 
         Returns:
-            object: helpers.create_pvc instance.
+            object: helpers.create_pod instance
+
         """
+        sa_name = service_account.name if service_account else None
         if custom_data:
             pod_obj = helpers.create_resource(**custom_data)
         else:
@@ -693,9 +707,14 @@ def pod_factory_fixture(request, pvc_factory):
                 namespace=pvc.namespace,
                 interface_type=interface,
                 pod_dict_path=pod_dict_path,
-                raw_block_pv=raw_block_pv
+                raw_block_pv=raw_block_pv,
+                dc_deployment=deployment_config,
+                sa_name=sa_name,
+                replica_count=replica_count,
+                command=command,
+                command_args=command_args
             )
-            assert pod_obj, "Failed to create PVC"
+            assert pod_obj, "Failed to create pod"
         instances.append(pod_obj)
         if status:
             helpers.wait_for_resource_state(pod_obj, status)
@@ -709,10 +728,13 @@ def pod_factory_fixture(request, pvc_factory):
         Delete the Pod
         """
         for instance in instances:
-            instance.delete()
-            instance.ocp.wait_for_delete(
-                instance.name
-            )
+            if instance.kind == constants.DEPLOYMENTCONFIG:
+                delete_deploymentconfig(instance)
+            else:
+                instance.delete()
+                instance.ocp.wait_for_delete(
+                    instance.name
+                )
 
     request.addfinalizer(finalizer)
     return factory
@@ -775,8 +797,22 @@ def teardown_factory_fixture(request):
     return factory
 
 
-@pytest.fixture()
+@pytest.fixture(scope='class')
+def service_account_factory_class(request):
+    return service_account_factory_fixture(request)
+
+
+@pytest.fixture(scope='session')
+def service_account_factory_session(request):
+    return service_account_factory_fixture(request)
+
+
+@pytest.fixture(scope='function')
 def service_account_factory(request):
+    return service_account_factory_fixture(request)
+
+
+def service_account_factory_fixture(request):
     """
     Create a service account
     """
@@ -898,7 +934,7 @@ def dc_pod_factory(
         Delete dc pods
         """
         for instance in instances:
-            helpers.delete_deploymentconfig_pods(instance)
+            delete_deploymentconfig(instance)
 
     request.addfinalizer(finalizer)
     return factory
@@ -1041,31 +1077,19 @@ def log_cli_level(pytestconfig):
 
 
 @pytest.fixture(scope="session")
-def run_io_in_background(request, pvc_factory_session, pod_factory_session):
+def run_io_in_background(
+    pvc_factory_session, service_account_factory_session, pod_factory_session
+):
     """
     Run IO during the test execution
     """
     if config.RUN.get('io_in_bg'):
         io_load = int(config.RUN.get('io_load')) * 0.01
-        io_bg_logs = config.RUN.get('bg_io_logs')
         log.info(
             "\n===================================================\n"
             "Tests will be running while IO is in the background\n"
             "==================================================="
         )
-
-        temp_file = tempfile.NamedTemporaryFile(
-            mode='w+', prefix='test_status', delete=False
-        )
-
-        def get_test_status():
-            with open(temp_file.name, 'r') as t_file:
-                return t_file.readline()
-
-        def set_test_status(status):
-            with open(temp_file.name, 'w') as t_file:
-                t_file.writelines(status)
-
         log.info(
             "Start running IO in the background. The amount of IO that will be written "
             "is going to be determined by the cluster capabilities according to its "
@@ -1073,46 +1097,11 @@ def run_io_in_background(request, pvc_factory_session, pod_factory_session):
         )
         cl_load_obj = ClusterLoad(
             pvc_factory=pvc_factory_session,
+            sa_factory=service_account_factory_session,
             pod_factory=pod_factory_session,
             target_percentage=io_load
         )
         cl_load_obj.reach_cluster_load_percentage_in_throughput()
-
-        set_test_status('running')
-
-        def finalizer():
-            """
-            Stop the thread that executed keep_io_running()
-            """
-            set_test_status('finished')
-            if thread:
-                thread.join()
-
-        request.addfinalizer(finalizer)
-
-        def keep_io_running():
-            """
-            This function purpose is to ensure that IO is running also after scenarios
-            in which the IO is stopped due to disruptive operations like node failures.
-            As long as Ceph health is OK, it watches the cluster throughput. In case it
-            is below 60% of the target throughput percentage defined with 'io_load',
-            it calls again reach_cluster_load_percentage_in_throughput()
-
-            """
-            cl_load_obj.logger.propagate = io_bg_logs
-            while get_test_status() == 'running':
-                try:
-                    cl_load_obj.ensure_cluster_load()
-                # Any type of exception should be caught and we should continue.
-                # We don't want any test to fail
-                except Exception:
-                    continue
-                time.sleep(10)
-
-            set_test_status('terminated')
-
-        thread = threading.Thread(target=keep_io_running)
-        thread.start()
 
 
 @pytest.fixture(
