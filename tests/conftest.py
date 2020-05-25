@@ -29,7 +29,7 @@ from ocs_ci.ocs.resources.cloud_manager import CloudManager
 from ocs_ci.ocs.resources.mcg import MCG
 from ocs_ci.ocs.resources.mcg_bucket import S3Bucket, OCBucket, CLIBucket
 from ocs_ci.ocs.resources.ocs import OCS
-from ocs_ci.ocs.resources.pod import get_rgw_pod, delete_deploymentconfig
+from ocs_ci.ocs.resources.pod import get_rgw_pod, delete_deploymentconfig_pods
 from ocs_ci.ocs.resources.pvc import PVC
 from ocs_ci.ocs.version import get_ocs_version, report_ocs_version
 from ocs_ci.ocs.cluster_load import ClusterLoad
@@ -715,26 +715,33 @@ def pod_factory_fixture(request, pvc_factory):
                 command_args=command_args
             )
             assert pod_obj, "Failed to create pod"
-        instances.append(pod_obj)
+        if deployment_config:
+            dc_name = pod_obj.get_labels().get('name')
+            dc_ocp_dict = ocp.OCP(
+                kind=constants.DEPLOYMENTCONFIG, namespace=pod_obj.namespace
+            ).get(resource_name=dc_name)
+            dc_obj = OCS(**dc_ocp_dict)
+            instances.append(dc_obj)
+
+        else:
+            instances.append(pod_obj)
         if status:
             helpers.wait_for_resource_state(pod_obj, status)
             pod_obj.reload()
         pod_obj.pvc = pvc
-
+        if deployment_config:
+            return dc_obj
         return pod_obj
 
     def finalizer():
         """
-        Delete the Pod
+        Delete the Pod or the DeploymentConfig
         """
         for instance in instances:
-            if instance.kind == constants.DEPLOYMENTCONFIG:
-                delete_deploymentconfig(instance)
-            else:
-                instance.delete()
-                instance.ocp.wait_for_delete(
-                    instance.name
-                )
+            instance.delete()
+            instance.ocp.wait_for_delete(
+                instance.name
+            )
 
     request.addfinalizer(finalizer)
     return factory
@@ -934,7 +941,7 @@ def dc_pod_factory(
         Delete dc pods
         """
         for instance in instances:
-            delete_deploymentconfig(instance)
+            delete_deploymentconfig_pods(instance)
 
     request.addfinalizer(finalizer)
     return factory

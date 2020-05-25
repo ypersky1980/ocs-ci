@@ -10,7 +10,6 @@ from ocs_ci.ocs import constants
 from ocs_ci.ocs.cluster import (
     CephCluster, get_osd_pods_memory_sum, get_percent_used_capacity
 )
-from ocs_ci.ocs.resources.pod import delete_deploymentconfig
 
 
 logger = logging.getLogger(__name__)
@@ -39,7 +38,7 @@ class ClusterLoad:
         self.sa_factory = sa_factory
         self.pod_factory = pod_factory
         self.target_percentage = target_percentage
-        self.pod_objs = list()
+        self.dc_objs = list()
         self.pvc_objs = list()
         self.pvc_size = int(get_osd_pods_memory_sum() * 0.5)
         self.io_file_size = f"{self.pvc_size - 1}G"
@@ -53,22 +52,22 @@ class ClusterLoad:
             interface=constants.CEPHBLOCKPOOL, size=self.pvc_size,
             volume_mode=constants.VOLUME_MODE_BLOCK
         )
+        self.pvc_objs.append(pvc_obj)
         service_account = self.sa_factory(pvc_obj.project)
 
-        self.pvc_objs.append(pvc_obj)
         # Set new arguments with the updated file size to be used for
         # DeploymentConfig of FIO pod creation
         fio_dc_data = templating.load_yaml(constants.FIO_DC_YAML)
         current_args = fio_dc_data['spec']['template']['spec']['containers'][0]['args']
         new_args = [arg for arg in current_args if "--filesize=" not in arg]
         new_args.append(f"--filesize={self.io_file_size}")
-        pod_obj = self.pod_factory(
+        dc_obj = self.pod_factory(
             pvc=pvc_obj, pod_dict_path=constants.FIO_DC_YAML,
             raw_block_pv=True, deployment_config=True,
             service_account=service_account, command_args=new_args
         )
-        self.pod_objs.append(pod_obj)
-        logger.info(f"Waiting 20 seconds for the IOs to kick-in on pod {pod_obj.name}")
+        self.dc_objs.append(dc_obj)
+        logger.info(f"Waiting 20 seconds for the IOs to kick-in on pod {dc_obj.name}")
         time.sleep(20)
 
     def delete_pod_and_pvc(self):
@@ -77,13 +76,14 @@ class ClusterLoad:
         IO to be stopped
 
         """
-        pod_name = self.pod_objs[-1].name
-        delete_deploymentconfig(self.pod_objs[-1])
-        self.pod_objs.remove(self.pod_objs[-1])
+        dc_name = self.dc_objs[-1].name
+        self.dc_objs[-1].delete()
+        self.dc_objs.remove(self.dc_objs[-1])
+        self.dc_objs[-1].ocp.wait_for_delete(dc_name)
         self.pvc_objs[-1].delete()
         self.pvc_objs[-1].ocp.wait_for_delete(self.pvc_objs[-1].name)
         self.pvc_objs.remove(self.pvc_objs[-1])
-        logger.info(f"Waiting for IO to be stopped on pod {pod_name}")
+        logger.info(f"Waiting for IO to be stopped on pod {dc_name}")
         time.sleep(20)
 
     def reach_cluster_load_percentage_in_throughput(self):
@@ -129,7 +129,7 @@ class ClusterLoad:
                 f"The cluster average collected throughput AFTER starting IO\n"
                 f"on the newly created pod is {current_throughput} Mb/s, while "
                 f"before, it\nwas {previous_throughput} Mb/s. The number of "
-                f"pods running IOs is {len(self.pod_objs) - 1}"
+                f"pods running IOs is {len(self.dc_objs) - 1}"
                 f"\n==========================================================="
             )
 
@@ -173,10 +173,10 @@ class ClusterLoad:
                         f"\n========================================"
                     )
                     cluster_limit = current_throughput
-                if len(self.pod_objs) > 8:
+                if len(self.dc_objs) > 8:
                     logger.warning(
                         f"\n=================================\n"
-                        f"The number of pods running IO is {len(self.pod_objs)} "
+                        f"The number of pods running IO is {len(self.dc_objs)} "
                         f"and the\nthroughput is less than 20 Mb/s. Breaking"
                         f"\n================================="
                     )
@@ -204,18 +204,18 @@ class ClusterLoad:
             "to reach cluster throughput utilization that is more or less the "
             "target throughput percentage"
         )
-        while current_throughput > (target_throughput * 1.05) and len(self.pod_objs) > 1:
+        while current_throughput > (target_throughput * 1.05) and len(self.dc_objs) > 1:
             self.delete_pod_and_pvc()
             current_throughput = self.cl_obj.calc_average_throughput()
             logger.info(
                 f"The cluster average collected throughput after deleting "
                 f"a pod is {current_throughput} Mb/s. The number "
-                f"of pods running IOs is {len(self.pod_objs)}"
+                f"of pods running IOs is {len(self.dc_objs)}"
             )
 
         logger.info(
             f"\n==============================================\n"
             f"The number of pods that will continue running"
-            f"\nIOs is {len(self.pod_objs)} at a load of {current_throughput} Mb/s"
+            f"\nIOs is {len(self.dc_objs)} at a load of {current_throughput} Mb/s"
             f"\n=============================================="
         )

@@ -1302,7 +1302,7 @@ def wait_for_dc_app_pods_to_reach_running_state(
                 )
 
 
-def delete_deploymentconfig(pod_obj):
+def delete_deploymentconfig_pods(pod_obj):
     """
     Delete a DeploymentConfig pod and all the pods that are controlled by it
 

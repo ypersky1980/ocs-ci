@@ -33,6 +33,8 @@ spec:
                  "--filesize=1G",
                  "--invalidate=1",
                  "--rwmixread=25",
+                 "--rate=200M",
+                 "--ioengine=libaio",
                  "--output-format=json"]
           imagePullPolicy: IfNotPresent
       volumes:
