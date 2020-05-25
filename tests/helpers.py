@@ -173,7 +173,7 @@ def create_pod(
             pod_data['spec']['volumes'][0]['persistentVolumeClaim']['claimName'] = pvc_name
 
     if interface_type == constants.CEPHBLOCKPOOL and raw_block_pv:
-        if pod_dict_path == constants.FEDORA_DC_YAML or constants.FIO_DC_YAML:
+        if pod_dict_path in [constants.FEDORA_DC_YAML, constants.FIO_DC_YAML]:
             temp_dict = [
                 {'devicePath': raw_block_device, 'name': pod_data.get('spec').get(
                     'template').get('spec').get('volumes')[0].get('name')}
