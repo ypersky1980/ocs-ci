@@ -355,4 +355,4 @@ def remove_ocp_registry_from_ocs(platform):
 
     assert image_registry_obj.patch(
         resource_name=constants.IMAGE_REGISTRY_RESOURCE_NAME, params=param_cmd, format_type='json'
-    ), f"OCS registry was removed from OCP cluster"
+    ), "OCS registry was removed from OCP cluster"
