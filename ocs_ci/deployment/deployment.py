@@ -36,7 +36,7 @@ from ocs_ci.ocs.resources.pod import (
     get_all_pods,
     validate_pods_are_respinned_and_running_state,
     delete_pods)
-from ocs_ci.ocs.resources.pvc import get_all_pvcs
+from ocs_ci.ocs.resources.pvc import get_all_pvc_objs
 from ocs_ci.ocs.resources.storage_cluster import get_all_storageclass, get_local_volume_cr, check_local_volume
 from ocs_ci.ocs.utils import (
     setup_ceph_toolbox, collect_ocs_logs
@@ -667,7 +667,7 @@ class Deployment(object):
                 sc_list.remove(storage_class)
 
         # Query for PVCs and OBCs that are using the storage class provisioners listed in the previous step.
-        pvc_list = get_all_pvcs(namespace='all-namespaces')
+        pvc_list = get_all_pvc_objs(namespace='all-namespaces')
         pvcs_to_delete = []
         for pvc in pvc_list:
             for storage_class in sc_list:
@@ -675,73 +675,73 @@ class Deployment(object):
                     pvcs_to_delete.append(pvc)
                     break
 
-        # Removing monitoring stack from OpenShift Container Storage
+        logger.info("Removing monitoring stack from OpenShift Container Storage")
         remove_monitoring_stack_from_ocs(sc_list)
 
-        # Removing OpenShift Container Platform registry from OpenShift Container Storage
+        logger.info("Removing OpenShift Container Platform registry from OpenShift Container Storage")
         remove_ocp_registry_from_ocs(self.platform)
 
-        # Removing the cluster logging operator from OpenShift Container Storage
+        logger.info("Removing the cluster logging operator from OpenShift Container Storage")
         clusterlogging_obj = ocp.OCP(
             kind=constants.CLUSTER_LOGGING, namespace=constants.OPENSHIFT_LOGGING_NAMESPACE
         )
         clusterlogging_obj.delete(resource_name='instance')
 
-        # Determine the pod that is consuming the PVC.
+        logger.info("Determine pods that are consuming PVCs")
         for pvc in pvcs_to_delete:
             delete_pods(pvc.get_attached_pods())
 
-        # Delete the PVCs.
+        logger.info("deleting pvcs")
         for pvc in pvc_list:
             pvc.delete()
             ocp_obj.wait_for_delete(pvc.name)
 
-        # Delete the StorageCluster object.
-        storage_cluster = ocp.OCP(kind=constants.STORAGECLUSTER, resource_name=constants.DEFAULT_CLUSTERNAME)
-        storage_cluster.delete()
-
-        # Delete the namespaces
-        ocp_obj.delete_project('openshift-storage')
-        ocp_obj.wait_for_delete("openshift-storage")
-
-        # Debugging nodes
+        logger.info("removing rook from nodes")
         nodes_list = get_labeled_nodes(constants.OPERATOR_NODE_LABEL)
         for node in nodes_list:
             ocp_obj.exec_oc_debug_cmd(node=node, cmd_list=["rm -rf /var/lib/rook"])
 
-        """next 2 steps are from 4.4"""
+        # next 2 steps are from 4.4
         if check_local_volume():
-            # Delete the local volume resource
+            logger.info("deleting local volume resource")
             local_volume_obj = get_local_volume_cr()
             local_volume_obj.delete()
 
-            # Clean up the artifacts from the storage nodes for that resource.
+            logger.info("removing localblock from nodes")
             for node in nodes_list:
                 ocp_obj.exec_oc_debug_cmd(node=node, cmd_list=["rm -rf /mnt/local-storage/localblock"])
 
-        # Delete the storage classes with an openshift-storage provisioner list
+        logger.info("Delete the storage classes with an openshift-storage provisioner list")
         for storage_class in sc_list:
-            storage_class.delete()
+            sc_obj = ocp.OCP(kind=constants.STORAGECLASS)
+            sc_obj.delete(resource_name=storage_class.get('metadata').get('name'))
 
-        # Remove the taint from the storage nodes.NOT SUPPORTED YET
-        """ ocp_obj.exec_oc_cmd("adm taint nodes --all node.ocs.openshift.io/storage-") """
+        logger.info("NOT SUPPORTED YET-Remove the taint from the storage nodes")
+        # ocp_obj.exec_oc_cmd("adm taint nodes --all node.ocs.openshift.io/storage-")
 
-        # Unlabel the storage nodes.
+        logger.info("unlabaling storage nodes")
         nodes_list.append(get_labeled_nodes('topology.rook.io/rack'))
         for node in nodes_list:
             ocp_obj.add_label(resource_name=node, label='cluster.ocs.openshift.io/openshift-storage-')
             ocp_obj.add_label(resource_name=node, label='topology.rook.io/rack-')
 
-        # Remove CustomResourceDefinitions.
-        ocp_obj.exec_oc_cmd(
-            "delete crd backingstores.noobaa.io bucketclasses.noobaa.io"
-            " cephblockpools.ceph.rook.io cephclusters.ceph.rook.io "
-            "cephfilesystems.ceph.rook.io cephnfses.ceph.rook.io "
-            "cephobjectstores.ceph.rook.io cephobjectstoreusers.ceph.rook.io "
-            "noobaas.noobaa.io ocsinitializations.ocs.openshift.io  "
-            "storageclusterinitializations.ocs.openshift.io "
-            "storageclusters.ocs.openshift.io  --wait=true --timeout=5m"
-        )
+        logger.info("deleting storageCluster object")
+        storage_cluster = ocp.OCP(kind=constants.STORAGECLUSTER, resource_name=constants.DEFAULT_CLUSTERNAME)
+        storage_cluster.delete(resource_name=constants.DEFAULT_CLUSTERNAME)
+
+        logger.info("deleting openshift-storage namespace")
+        ocp_obj.delete_project('openshift-storage')
+        ocp_obj.wait_for_delete('openshift-storage')
+
+        logger.info("removing CRDs")
+        crd_list = ['backingstores.noobaa.io', 'bucketclasses.noobaa.io', 'cephblockpools.ceph.rook.io',
+                    'cephclusters.ceph.rook.io', 'cephfilesystems.ceph.rook.io', 'cephnfses.ceph.rook.io',
+                    'cephobjectstores.ceph.rook.io', 'cephobjectstoreusers.ceph.rook.io', 'noobaas.noobaa.io',
+                    'ocsinitializations.ocs.openshift.io', 'storageclusterinitializations.ocs.openshift.io',
+                    'storageclusters.ocs.openshift.io']
+        for crd in crd_list:
+            ocp_obj.exec_oc_cmd(f"delete crd {crd} --timeout=30s"
+                                )
 
 
 def create_catalog_source(image=None, ignore_upgrade=False):
