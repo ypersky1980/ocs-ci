@@ -37,6 +37,7 @@ from ocs_ci.helpers.helpers import (
 from ocs_ci.ocs import constants, defaults, ocp
 from ocs_ci.ocs.constants import HCI_PROVIDER_CLIENT_PLATFORMS, FUSION_CONF_DIR
 from ocs_ci.ocs.exceptions import (
+    ConnectivityFail,
     ProviderModeNotFoundException,
     CommandFailed,
     TimeoutExpiredError,
@@ -952,19 +953,25 @@ class HostedClients(HyperShiftBase):
         """
 
         # stage 1 deploy multiple hosted OCP clusters
-        # If all desired clusters were already deployed and self.deploy_hosted_ocp_clusters() returns None instead of
-        # the list, in this case we assume the stage of Hosted OCP clusters creation is done, and we
-        # proceed to ODF installation and storage client setup.
-        # If specific cluster names were provided, we will deploy only those.
+        # Check which desired clusters already exist and only deploy the ones that don't.
         if not cluster_names:
-            cluster_names = deploy_hosted_ocp_clusters() or [
+            cluster_names = [
                 name
                 for name, data in config.ENV_DATA.get("clusters", {}).items()
                 if data.get("cluster_type") == "hci_client"
             ]
 
-        if cluster_names:
-            cluster_names = deploy_hosted_ocp_clusters(cluster_names)
+        existing_clusters = get_hosted_cluster_names()
+        clusters_to_deploy = [
+            name for name in cluster_names if name not in existing_clusters
+        ]
+        if clusters_to_deploy:
+            deploy_hosted_ocp_clusters(clusters_to_deploy)
+        else:
+            logger.info(
+                "All desired hosted OCP clusters already exist, "
+                "skipping OCP deployment"
+            )
 
         # stage 2 download all available kubeconfig files
         log_step("Download kubeconfig for all clusters")
@@ -1010,6 +1017,31 @@ class HostedClients(HyperShiftBase):
             )
 
         check_odf_prerequisites()
+
+        # stage 3.5: Setup VPC peering, routing, and security groups for AWS HCP clusters
+        # This must be done before ODF deployment to ensure network connectivity
+        log_step(
+            "Setup network for AWS HCP clusters (VPC peering, routing, security groups)"
+        )
+        for cluster_name in cluster_names:
+            cluster_config = config.ENV_DATA.get("clusters", {}).get(cluster_name, {})
+            hosted_cluster_platform = cluster_config.get(
+                "hosted_cluster_platform", "kubevirt"
+            )
+
+            if hosted_cluster_platform == "aws":
+                try:
+                    aws_hcp = HypershiftAWSHostedOCP(cluster_name)
+                    aws_hcp.setup_and_verify_network(
+                        nodeport=constants.CEPH_NODE_PORT,
+                    )
+                except (ConnectivityFail, ClientError, ValueError) as e:
+                    logger.error(
+                        f"Network setup failed for cluster '{cluster_name}': {e}"
+                    )
+                    logger.warning(
+                        "Continuing with deployment, but network connectivity may fail"
+                    )
 
         # stage 4 deploy ODF on all hosted clusters if not already deployed
         log_step("Deploy ODF client on hosted OCP clusters")
@@ -2208,10 +2240,15 @@ class HypershiftAWSHostedOCP(SpokeOCP, HyperShiftBase, Deployment, MCEInstaller,
             name (str): Cluster name
         """
         SpokeOCP.__init__(self, name)
-        Deployment.__init__(self)
         HyperShiftBase.__init__(self)
         MCEInstaller.__init__(self)
-        AWS.__init__(self)
+
+        # Load AWS-specific configuration BEFORE initializing AWS class
+        # This ensures we have the correct region for boto3 clients
+        self._load_aws_config()
+
+        # Initialize AWS with the cluster-specific region
+        AWS.__init__(self, region_name=self.aws_region)
 
         # Load AWS-specific configuration
         self.vpc_cidr = None
@@ -2243,8 +2280,6 @@ class HypershiftAWSHostedOCP(SpokeOCP, HyperShiftBase, Deployment, MCEInstaller,
 
         # OIDC bucket region
         self.oidc_bucket_region = None
-
-        self._load_aws_config()
 
     def _load_aws_config(self):
         """
@@ -3165,16 +3200,53 @@ class HypershiftAWSHostedOCP(SpokeOCP, HyperShiftBase, Deployment, MCEInstaller,
                     f"Using pre-configured OIDC bucket: {self.oidc_bucket_name} "
                     f"in region {self.oidc_bucket_region}"
                 )
+            else:
+                # Try to discover existing OIDC bucket from the cluster secret
+                secret_name = constants.HCP_OIDC_S3_SECRET
+                secret_ns = cluster_config.get("oidc_secret_namespace", "local-cluster")
+                secret_obj = OCP(
+                    kind="secret",
+                    namespace=secret_ns,
+                    resource_name=secret_name,
+                )
+                if secret_obj.is_exist():
+                    secret_data = secret_obj.get()
+                    encoded = secret_data.get("data", {})
+                    self.oidc_bucket_name = base64.b64decode(
+                        encoded.get("bucket", "")
+                    ).decode()
+                    self.oidc_bucket_region = (
+                        base64.b64decode(encoded.get("region", "")).decode()
+                        or self.aws_region
+                    )
+                    logger.info(
+                        f"Discovered existing OIDC bucket from secret "
+                        f"'{secret_name}': {self.oidc_bucket_name} "
+                        f"in region {self.oidc_bucket_region}"
+                    )
 
         if create_deployer_iam_role:
             log_step(
                 "Setting up IAM role for a deployer to create AWS infrastructure for hosted cluster"
             )
             role_result = self.create_deployer_iam_role(
-                role_name="aws-agent-deployer-role",
-                policy_name="aws-agent-deployer-policy",
+                role_name=constants.HCP_DEPLOYER_IAM_ROLE,
+                policy_name=constants.HCP_DEPLOYER_IAM_POLICY,
             )
             self.role_arn = role_result["role_arn"]
+        else:
+            # Try to discover existing IAM role
+            if not self.role_arn:
+                try:
+                    existing_role = self.iam_client.get_role(
+                        RoleName=constants.HCP_DEPLOYER_IAM_ROLE
+                    )
+                    self.role_arn = existing_role["Role"]["Arn"]
+                    logger.info(
+                        f"Discovered existing deployer IAM role: " f"{self.role_arn}"
+                    )
+                except ClientError:
+                    pass
 
         log_step("Creating AWS infrastructure for the hosted cluster")
 
@@ -3196,8 +3268,7 @@ class HypershiftAWSHostedOCP(SpokeOCP, HyperShiftBase, Deployment, MCEInstaller,
             f"  Bucket Name: {self.oidc_bucket_name}\n"
             f"  Bucket Region: {self.oidc_bucket_region}"
         )
-        # TODO: remove back if does not help
-        # self.retrieve_sts_session_token()
+
         self.retrieve_sts_session_token_via_cli()
         logger.info(
             "Waiting 30 seconds to ensure STS credentials are available before proceeding..."
@@ -3634,7 +3705,7 @@ class HypershiftAWSHostedOCP(SpokeOCP, HyperShiftBase, Deployment, MCEInstaller,
             logger.error(f"Failed to apply bucket policy: {e}")
             raise
 
-        secret_name = "hypershift-operator-oidc-provider-s3-credentials"
+        secret_name = constants.HCP_OIDC_S3_SECRET
         logger.info(
             f"Creating Kubernetes secret '{secret_name}' in namespace '{namespace}'"
         )
@@ -4020,6 +4091,857 @@ class HypershiftAWSHostedOCP(SpokeOCP, HyperShiftBase, Deployment, MCEInstaller,
         )
 
         return result
+
+    def get_vpc_id_by_node_ip(self, node_ip):
+        """
+        Get VPC ID by looking up the EC2 instance with the given private IP.
+
+        This method is useful for clusters that don't have kubernetes.io/cluster tags
+        (like management clusters or external clusters).
+
+        Args:
+            node_ip (str): Private IP address of a node in the cluster
+
+        Returns:
+            str: VPC ID where the node resides
+
+        Raises:
+            ValueError: If no instance is found with the given IP
+        """
+        instance_id = self.get_instance_id_by_private_ip(node_ip)
+        vpc_id = self.get_vpc_id_by_instance_id(instance_id)
+        logger.info(f"Found VPC {vpc_id} for node with IP {node_ip}")
+        return vpc_id
+
+    def get_mgmt_vpc_id(self):
+        """
+        Get VPC ID for the management cluster using a node's private IP.
+
+        This method is used for management clusters that don't have
+        kubernetes.io/cluster infra tags. It retrieves a node's private IP
+        from the cluster and uses it to find the VPC ID.
+
+        Returns:
+            str: VPC ID for the management cluster
+
+        Raises:
+            ValueError: If unable to get node IP or VPC ID
+        """
+        logger.info("Getting management cluster VPC ID via node IP")
+        node_ip = self.get_node_private_ip()
+        vpc_id = self.get_vpc_id_by_node_ip(node_ip)
+        logger.info(f"Found management cluster VPC: {vpc_id} (via node IP {node_ip})")
+        return vpc_id
+
+    def get_vpc_id_for_cluster(self, cluster_name=None):
+        """
+        Get VPC ID for a cluster by looking up the infrastructure with kubernetes.io/cluster tag.
+
+        Args:
+            cluster_name (str): Name of the cluster. If not provided, uses self.name
+
+        Returns:
+            str: VPC ID for the cluster
+
+        Raises:
+            ValueError: If no VPC is found for the cluster
+        """
+        if not cluster_name:
+            cluster_name = self.name
+
+        infra_id = f"{cluster_name}-infra"
+        vpcs = self.get_vpc_from_existing_infra(infra_id=infra_id)
+
+        if not vpcs:
+            raise ValueError(
+                f"No VPC found for cluster '{cluster_name}' with infra-id '{infra_id}'"
+            )
+
+        vpc_id = vpcs[0]["VpcId"]
+        logger.info(f"Found VPC {vpc_id} for cluster '{cluster_name}'")
+        return vpc_id
+
+    def get_vpc_cidr_by_vpc_id(self, vpc_id):
+        """
+        Get VPC CIDR block by VPC ID.
+
+        Args:
+            vpc_id (str): VPC ID
+
+        Returns:
+            str: CIDR block for the VPC
+        """
+        vpcs = self.ec2_client.describe_vpcs(VpcIds=[vpc_id])
+        if not vpcs.get("Vpcs"):
+            raise ValueError(f"No VPC found with ID '{vpc_id}'")
+
+        cidr_block = vpcs["Vpcs"][0]["CidrBlock"]
+        logger.info(f"VPC {vpc_id} has CIDR block: {cidr_block}")
+        return cidr_block
+
+    def get_instance_id_by_private_ip(self, private_ip):
+        """
+        Get EC2 instance ID by private IP address.
+
+        Args:
+            private_ip (str): Private IP address of the instance
+
+        Returns:
+            str: Instance ID
+        """
+        instances = self.ec2_client.describe_instances(
+            Filters=[
+                {
+                    "Name": "private-ip-address",
+                    "Values": [private_ip],
+                }
+            ]
+        )
+
+        reservations = instances.get("Reservations", [])
+        if not reservations:
+            raise ValueError(f"No instance found with private IP '{private_ip}'")
+
+        instance_id = reservations[0]["Instances"][0]["InstanceId"]
+        logger.info(f"Found instance {instance_id} for private IP {private_ip}")
+        return instance_id
+
+    def get_subnet_id_by_instance_id(self, instance_id):
+        """
+        Get subnet ID for an EC2 instance.
+
+        Args:
+            instance_id (str): EC2 instance ID
+
+        Returns:
+            str: Subnet ID
+        """
+        instances = self.ec2_client.describe_instances(InstanceIds=[instance_id])
+        subnet_id = instances["Reservations"][0]["Instances"][0]["SubnetId"]
+        logger.info(f"Instance {instance_id} is in subnet {subnet_id}")
+        return subnet_id
+
+    def get_route_table_id_by_subnet_id(self, subnet_id):
+        """
+        Get route table ID associated with a subnet.
+
+        Args:
+            subnet_id (str): Subnet ID
+
+        Returns:
+            str: Route table ID
+        """
+        route_tables = self.ec2_client.describe_route_tables(
+            Filters=[
+                {
+                    "Name": "association.subnet-id",
+                    "Values": [subnet_id],
+                }
+            ]
+        )
+
+        if not route_tables.get("RouteTables"):
+            # Try to get the main route table for the VPC
+            logger.warning(
+                f"No explicit route table found for subnet {subnet_id}, looking for main route table"
+            )
+            subnet_info = self.ec2_client.describe_subnets(SubnetIds=[subnet_id])
+            vpc_id = subnet_info["Subnets"][0]["VpcId"]
+            route_tables = self.ec2_client.describe_route_tables(
+                Filters=[
+                    {"Name": "vpc-id", "Values": [vpc_id]},
+                    {"Name": "association.main", "Values": ["true"]},
+                ]
+            )
+
+        if not route_tables.get("RouteTables"):
+            raise ValueError(f"No route table found for subnet '{subnet_id}'")
+
+        rtb_id = route_tables["RouteTables"][0]["RouteTableId"]
+        logger.info(f"Subnet {subnet_id} uses route table {rtb_id}")
+        return rtb_id
+
+    def get_security_group_id_by_instance_id(self, instance_id):
+        """
+        Get the first security group ID attached to an EC2 instance.
+
+        Args:
+            instance_id (str): EC2 instance ID
+
+        Returns:
+            str: Security group ID
+        """
+        instances = self.ec2_client.describe_instances(InstanceIds=[instance_id])
+        security_groups = instances["Reservations"][0]["Instances"][0]["SecurityGroups"]
+
+        if not security_groups:
+            raise ValueError(f"No security groups found for instance '{instance_id}'")
+
+        sg_id = security_groups[0]["GroupId"]
+        logger.info(f"Instance {instance_id} has security group {sg_id}")
+        return sg_id
+
+    def create_vpc_peering_connection(self, client_vpc_id, mgmt_vpc_id):
+        """
+        Create a VPC peering connection between two VPCs.
+
+        Args:
+            client_vpc_id (str): VPC ID of the client cluster
+            mgmt_vpc_id (str): VPC ID of the management cluster
+
+        Returns:
+            str: VPC peering connection ID
+        """
+        logger.info(
+            f"Creating VPC peering connection: {client_vpc_id} -> {mgmt_vpc_id}"
+        )
+
+        response = self.ec2_client.create_vpc_peering_connection(
+            VpcId=client_vpc_id,
+            PeerVpcId=mgmt_vpc_id,
+        )
+
+        pcx_id = response["VpcPeeringConnection"]["VpcPeeringConnectionId"]
+        logger.info(f"Created VPC peering connection: {pcx_id}")
+        return pcx_id
+
+    def accept_vpc_peering_connection(self, pcx_id):
+        """
+        Accept a VPC peering connection.
+
+        Args:
+            pcx_id (str): VPC peering connection ID
+
+        Returns:
+            dict: Response from the accept call
+        """
+        logger.info(f"Accepting VPC peering connection: {pcx_id}")
+
+        response = self.ec2_client.accept_vpc_peering_connection(
+            VpcPeeringConnectionId=pcx_id
+        )
+
+        status = response["VpcPeeringConnection"]["Status"]["Code"]
+        logger.info(f"VPC peering connection {pcx_id} status: {status}")
+        return response
+
+    def wait_for_vpc_peering_active(self, pcx_id, timeout=300, interval=10):
+        """
+        Wait for VPC peering connection to become active.
+
+        Args:
+            pcx_id (str): VPC peering connection ID
+            timeout (int): Timeout in seconds
+            interval (int): Polling interval in seconds
+
+        Returns:
+            bool: True if peering is active
+
+        Raises:
+            TimeoutExpiredError: If peering doesn't become active within timeout
+        """
+        logger.info(f"Waiting for VPC peering connection {pcx_id} to become active...")
+
+        for _ in TimeoutSampler(timeout=timeout, sleep=interval, func=lambda: None):
+            response = self.ec2_client.describe_vpc_peering_connections(
+                VpcPeeringConnectionIds=[pcx_id]
+            )
+            status = response["VpcPeeringConnections"][0]["Status"]["Code"]
+            logger.debug(f"VPC peering {pcx_id} status: {status}")
+
+            if status == "active":
+                logger.info(f"VPC peering connection {pcx_id} is now active")
+                return True
+            elif status in ["failed", "rejected", "deleted", "expired"]:
+                raise ValueError(
+                    f"VPC peering connection {pcx_id} is in terminal state: {status}"
+                )
+
+        raise TimeoutExpiredError(
+            f"VPC peering {pcx_id} did not become active within {timeout}s"
+        )
+
+    def create_route_to_peering(self, route_table_id, destination_cidr, pcx_id):
+        """
+        Create a route in a route table to a VPC peering connection.
+
+        Args:
+            route_table_id (str): Route table ID
+            destination_cidr (str): Destination CIDR block
+            pcx_id (str): VPC peering connection ID
+
+        Returns:
+            bool: True if route was created successfully
+        """
+        logger.info(
+            f"Creating route in {route_table_id}: {destination_cidr} -> {pcx_id}"
+        )
+
+        try:
+            response = self.ec2_client.create_route(
+                RouteTableId=route_table_id,
+                DestinationCidrBlock=destination_cidr,
+                VpcPeeringConnectionId=pcx_id,
+            )
+            success = response.get("Return", False)
+            if success:
+                logger.info(f"Route created successfully in {route_table_id}")
+            else:
+                logger.warning(f"Route creation returned False for {route_table_id}")
+            return success
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "RouteAlreadyExists":
+                logger.info(
+                    f"Route to {destination_cidr} already exists in {route_table_id}"
+                )
+                return True
+            raise
+
+    def authorize_security_group_ingress_port(
+        self, security_group_id, port, cidr, protocol="tcp"
+    ):
+        """
+        Add an ingress rule to a security group for a specific port.
+
+        Args:
+            security_group_id (str): Security group ID
+            port (int): Port number to allow
+            cidr (str): Source CIDR block
+            protocol (str): Protocol (default: tcp)
+
+        Returns:
+            dict: Response from the authorize call
+        """
+        logger.info(
+            f"Adding ingress rule to {security_group_id}: port {port}, cidr {cidr}, protocol {protocol}"
+        )
+
+        try:
+            response = self.ec2_client.authorize_security_group_ingress(
+                GroupId=security_group_id,
+                IpPermissions=[
+                    {
+                        "IpProtocol": protocol,
+                        "FromPort": port,
+                        "ToPort": port,
+                        "IpRanges": [{"CidrIp": cidr}],
+                    }
+                ],
+            )
+            logger.info(f"Ingress rule added successfully to {security_group_id}")
+            return response
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "InvalidPermission.Duplicate":
+                logger.info(
+                    f"Ingress rule for port {port} already exists in {security_group_id}"
+                )
+                return {"Return": True, "message": "Rule already exists"}
+            raise
+
+    def authorize_security_group_ingress_ports(
+        self, security_group_id, ports_config, cidr
+    ):
+        """
+        Add multiple ingress rules to a security group.
+
+        Args:
+            security_group_id (str): Security group ID
+            ports_config (list): List of port configurations, each being:
+                - int: Single port number
+                - tuple: (from_port, to_port) for port range
+                - dict: {"from_port": int, "to_port": int, "protocol": str}
+            cidr (str): Source CIDR block
+
+        Returns:
+            dict: Response from the authorize call
+        """
+        logger.info(
+            f"Adding multiple ingress rules to {security_group_id} from CIDR {cidr}"
+        )
+
+        ip_permissions = []
+        for port_cfg in ports_config:
+            if isinstance(port_cfg, int):
+                ip_permissions.append(
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": port_cfg,
+                        "ToPort": port_cfg,
+                        "IpRanges": [{"CidrIp": cidr}],
+                    }
+                )
+            elif isinstance(port_cfg, tuple):
+                from_port, to_port = port_cfg
+                ip_permissions.append(
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": from_port,
+                        "ToPort": to_port,
+                        "IpRanges": [{"CidrIp": cidr}],
+                    }
+                )
+            elif isinstance(port_cfg, dict):
+                ip_permissions.append(
+                    {
+                        "IpProtocol": port_cfg.get("protocol", "tcp"),
+                        "FromPort": port_cfg["from_port"],
+                        "ToPort": port_cfg["to_port"],
+                        "IpRanges": [{"CidrIp": cidr}],
+                    }
+                )
+
+        logger.info(
+            f"Adding {len(ip_permissions)} ingress rules to {security_group_id}"
+        )
+
+        try:
+            response = self.ec2_client.authorize_security_group_ingress(
+                GroupId=security_group_id,
+                IpPermissions=ip_permissions,
+            )
+            logger.info(f"Ingress rules added successfully to {security_group_id}")
+            return response
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "InvalidPermission.Duplicate":
+                logger.info(
+                    f"Some ingress rules already exist in {security_group_id}, adding individually"
+                )
+                # Try adding rules individually
+                results = []
+                for perm in ip_permissions:
+                    try:
+                        result = self.ec2_client.authorize_security_group_ingress(
+                            GroupId=security_group_id,
+                            IpPermissions=[perm],
+                        )
+                        results.append(result)
+                    except ClientError as inner_e:
+                        if (
+                            inner_e.response.get("Error", {}).get("Code")
+                            == "InvalidPermission.Duplicate"
+                        ):
+                            logger.debug(f"Rule already exists: {perm}")
+                        else:
+                            raise
+                return {"Return": True, "results": results}
+            raise
+
+    def setup_vpc_peering_and_routing(
+        self,
+        client_cluster_name,
+        mgmt_cluster_name,
+        client_instance_id=None,
+        mgmt_instance_id=None,
+    ):
+        """
+        Setup VPC peering and routing between client and management clusters.
+
+        This method performs the complete VPC peering setup:
+        1. Creates VPC peering connection between client and management VPCs
+        2. Accepts the peering connection
+        3. Creates routes in both VPCs to enable traffic flow
+        4. Waits for the peering to become active
+
+        Args:
+            client_cluster_name (str): Name of the client cluster
+            mgmt_cluster_name (str): Name of the management cluster
+            client_instance_id (str): Optional - EC2 instance ID in client VPC (used to find route table)
+            mgmt_instance_id (str): Optional - EC2 instance ID in management VPC (used to find route table)
+
+        Returns:
+            dict: Dictionary containing:
+                - pcx_id: VPC peering connection ID
+                - client_vpc_id: Client VPC ID
+                - mgmt_vpc_id: Management VPC ID
+                - client_vpc_cidr: Client VPC CIDR
+                - mgmt_vpc_cidr: Management VPC CIDR
+        """
+        logger.info(
+            f"Setting up VPC peering and routing between "
+            f"client '{client_cluster_name}' and management '{mgmt_cluster_name}'"
+        )
+
+        # Get client VPC ID using infra tag
+        client_vpc_id = self.get_vpc_id_for_cluster(client_cluster_name)
+
+        # Get management VPC ID using node IP (mgmt clusters don't have infra tags)
+        mgmt_vpc_id = self.get_mgmt_vpc_id()
+
+        # Get VPC CIDRs
+        client_vpc_cidr = self.get_vpc_cidr_by_vpc_id(client_vpc_id)
+        mgmt_vpc_cidr = self.get_vpc_cidr_by_vpc_id(mgmt_vpc_id)
+
+        logger.info(
+            f"VPC Details:\n"
+            f"  Client VPC: {client_vpc_id} ({client_vpc_cidr})\n"
+            f"  Mgmt VPC: {mgmt_vpc_id} ({mgmt_vpc_cidr})"
+        )
+
+        # Check if peering already exists
+        existing_peerings = self.ec2_client.describe_vpc_peering_connections(
+            Filters=[
+                {"Name": "requester-vpc-info.vpc-id", "Values": [client_vpc_id]},
+                {"Name": "accepter-vpc-info.vpc-id", "Values": [mgmt_vpc_id]},
+                {
+                    "Name": "status-code",
+                    "Values": ["active", "pending-acceptance", "provisioning"],
+                },
+            ]
+        )
+
+        if existing_peerings.get("VpcPeeringConnections"):
+            pcx_id = existing_peerings["VpcPeeringConnections"][0][
+                "VpcPeeringConnectionId"
+            ]
+            status = existing_peerings["VpcPeeringConnections"][0]["Status"]["Code"]
+            logger.info(
+                f"Found existing VPC peering connection: {pcx_id} (status: {status})"
+            )
+            if status == "pending-acceptance":
+                self.accept_vpc_peering_connection(pcx_id)
+        else:
+            # Create VPC peering connection
+            pcx_id = self.create_vpc_peering_connection(client_vpc_id, mgmt_vpc_id)
+            # Accept the peering connection
+            self.accept_vpc_peering_connection(pcx_id)
+
+        # Wait for peering to be active
+        self.wait_for_vpc_peering_active(pcx_id)
+
+        # Setup routing - we need to find route tables for both VPCs
+        # If instance IDs are provided, use them to find specific route tables
+        # Otherwise, we'll try to find the main route tables
+
+        if mgmt_instance_id:
+            mgmt_subnet_id = self.get_subnet_id_by_instance_id(mgmt_instance_id)
+            mgmt_rtb_id = self.get_route_table_id_by_subnet_id(mgmt_subnet_id)
+        else:
+            # Get main route table for management VPC
+            mgmt_route_tables = self.ec2_client.describe_route_tables(
+                Filters=[
+                    {"Name": "vpc-id", "Values": [mgmt_vpc_id]},
+                    {"Name": "association.main", "Values": ["true"]},
+                ]
+            )
+            if not mgmt_route_tables.get("RouteTables"):
+                raise ValueError(
+                    f"No main route table found for management VPC {mgmt_vpc_id}"
+                )
+            mgmt_rtb_id = mgmt_route_tables["RouteTables"][0]["RouteTableId"]
+
+        if client_instance_id:
+            client_subnet_id = self.get_subnet_id_by_instance_id(client_instance_id)
+            client_rtb_id = self.get_route_table_id_by_subnet_id(client_subnet_id)
+        else:
+            # Get main route table for client VPC
+            client_route_tables = self.ec2_client.describe_route_tables(
+                Filters=[
+                    {"Name": "vpc-id", "Values": [client_vpc_id]},
+                    {"Name": "association.main", "Values": ["true"]},
+                ]
+            )
+            if not client_route_tables.get("RouteTables"):
+                raise ValueError(
+                    f"No main route table found for client VPC {client_vpc_id}"
+                )
+            client_rtb_id = client_route_tables["RouteTables"][0]["RouteTableId"]
+
+        # Create routes in both directions
+        # Management -> Client
+        self.create_route_to_peering(mgmt_rtb_id, client_vpc_cidr, pcx_id)
+        # Client -> Management
+        self.create_route_to_peering(client_rtb_id, mgmt_vpc_cidr, pcx_id)
+
+        result = {
+            "pcx_id": pcx_id,
+            "client_vpc_id": client_vpc_id,
+            "mgmt_vpc_id": mgmt_vpc_id,
+            "client_vpc_cidr": client_vpc_cidr,
+            "mgmt_vpc_cidr": mgmt_vpc_cidr,
+            "client_rtb_id": client_rtb_id,
+            "mgmt_rtb_id": mgmt_rtb_id,
+        }
+
+        logger.info(
+            f"VPC peering and routing setup completed:\n"
+            f"  Peering Connection: {pcx_id}\n"
+            f"  Client VPC: {client_vpc_id} ({client_vpc_cidr})\n"
+            f"  Mgmt VPC: {mgmt_vpc_id} ({mgmt_vpc_cidr})\n"
+            f"  Client Route Table: {client_rtb_id}\n"
+            f"  Mgmt Route Table: {mgmt_rtb_id}"
+        )
+
+        return result
+
+    def add_ceph_ports_to_security_group(
+        self, security_group_id, source_cidr, nodeport=None
+    ):
+        """
+        Add Ceph-related ports to a security group.
+
+        This method adds the standard Ceph ports plus an optional NodePort:
+        - 3300: Ceph Monitor (msgr2)
+        - 6789: Ceph Monitor (legacy)
+        - 9283: Ceph Exporter (metrics)
+        - 6800-7300: Ceph OSD communication
+
+        Args:
+            security_group_id (str): Security group ID to modify
+            source_cidr (str): Source CIDR block to allow traffic from
+            nodeport (int): Optional NodePort to add (e.g., for Ceph RBD service)
+
+        Returns:
+            dict: Results of the security group modifications
+        """
+        logger.info(
+            f"Adding Ceph ports to security group {security_group_id} from CIDR {source_cidr}"
+        )
+
+        ports_config = [
+            constants.CEPH_MON_MSGR2_PORT,  # Ceph Monitor (msgr2)
+            constants.CEPH_MON_LEGACY_PORT,  # Ceph Monitor (legacy)
+            constants.CEPH_EXPORTER_PORT,  # Ceph Exporter
+            (
+                constants.CEPH_OSD_PORT_MIN,
+                constants.CEPH_OSD_PORT_MAX,
+            ),  # Ceph OSD range
+        ]
+
+        if nodeport:
+            ports_config.append(nodeport)
+            logger.info(f"Including NodePort {nodeport} in security group rules")
+
+        result = self.authorize_security_group_ingress_ports(
+            security_group_id=security_group_id,
+            ports_config=ports_config,
+            cidr=source_cidr,
+        )
+
+        logger.info(f"Ceph ports added to security group {security_group_id}")
+        return result
+
+    def setup_network_for_client_cluster(
+        self,
+        client_cluster_name,
+        mgmt_cluster_name,
+        mgmt_instance_id,
+        nodeport=None,
+    ):
+        """
+        Complete network setup for a client cluster to communicate with management cluster.
+
+        This method performs the full network setup required for a client cluster
+        to communicate with a management/provider cluster:
+        1. Sets up VPC peering between client and management VPCs
+        2. Configures routing in both VPCs
+        3. Adds Ceph ports to the management cluster's security group
+
+        Args:
+            client_cluster_name (str): Name of the client cluster
+            mgmt_cluster_name (str): Name of the management cluster
+            mgmt_instance_id (str): EC2 instance ID in management cluster (used for SG and routing)
+            nodeport (int): Optional NodePort to add to security group rules
+
+        Returns:
+            dict: Complete network setup information
+        """
+        logger.info(
+            f"Setting up complete network for client cluster '{client_cluster_name}' "
+            f"to communicate with management cluster '{mgmt_cluster_name}'"
+        )
+
+        # Setup VPC peering and routing
+        peering_result = self.setup_vpc_peering_and_routing(
+            client_cluster_name=client_cluster_name,
+            mgmt_cluster_name=mgmt_cluster_name,
+            mgmt_instance_id=mgmt_instance_id,
+        )
+
+        # Get security group for management instance
+        mgmt_sg_id = self.get_security_group_id_by_instance_id(mgmt_instance_id)
+
+        # Add Ceph ports to security group
+        client_vpc_cidr = peering_result["client_vpc_cidr"]
+        sg_result = self.add_ceph_ports_to_security_group(
+            security_group_id=mgmt_sg_id,
+            source_cidr=client_vpc_cidr,
+            nodeport=nodeport,
+        )
+
+        result = {
+            **peering_result,
+            "mgmt_sg_id": mgmt_sg_id,
+            "sg_rules_added": sg_result,
+        }
+
+        logger.info(
+            f"Complete network setup finished:\n"
+            f"  VPC Peering: {peering_result['pcx_id']}\n"
+            f"  Security Group: {mgmt_sg_id}\n"
+            f"  Client CIDR: {client_vpc_cidr}"
+        )
+
+        return result
+
+    @kubeconfig_exists_decorator
+    def verify_network_connectivity(self, target_ip, source_node=None, timeout=10):
+        """
+        Verify network connectivity from a cluster node to a target IP using ping.
+
+        This method runs an 'oc debug' session on a worker node and pings the target IP
+        to verify network connectivity is established.
+
+        Args:
+            target_ip (str): Target IP address to ping
+            source_node (str): Optional - specific node name to use for debug.
+                If not provided, uses the first worker node.
+            timeout (int): Ping timeout in seconds
+
+        Returns:
+            bool: True if ping succeeds, False otherwise
+        """
+        logger.info(f"Verifying network connectivity to {target_ip}")
+
+        if not source_node:
+            ocp_nodes = OCP(kind="node", cluster_kubeconfig=self.cluster_kubeconfig)
+            nodes = ocp_nodes.get(selector="node-role.kubernetes.io/worker")
+            if not nodes.get("items"):
+                logger.error("No worker nodes found in the cluster")
+                return False
+            source_node = nodes["items"][0]["metadata"]["name"]
+            logger.info(f"Using worker node: {source_node}")
+
+        ocp_obj = OCP(cluster_kubeconfig=self.cluster_kubeconfig)
+        ping_cmd = f"ping -c 3 -W {timeout} {target_ip}"
+        debug_cmd = (
+            f"debug nodes/{source_node} --to-namespace=default"
+            f' -- chroot /host /bin/bash -c "{ping_cmd}"'
+        )
+
+        try:
+            result = str(
+                ocp_obj.exec_oc_cmd(
+                    command=debug_cmd,
+                    out_yaml_format=False,
+                    timeout=timeout * 3 + 30,
+                    ignore_error=True,
+                )
+            )
+            logger.info(f"Ping result:\n{result}")
+
+            if "0% packet loss" in result:
+                logger.info(
+                    f"Network connectivity to {target_ip} verified successfully"
+                )
+                return True
+
+            logger.warning(f"Ping to {target_ip} failed:\n{result}")
+            return False
+
+        except CommandFailed as e:
+            logger.error(f"Failed to verify network connectivity to {target_ip}: {e}")
+            return False
+
+    def get_node_private_ip(self, node_name=None):
+        """
+        Get the private IP address of a node in a cluster.
+
+        Args:
+            node_name (str): Optional - specific node name. If not provided, uses first worker node.
+
+        Returns:
+            str: Private IP address of the node
+        """
+        ocp_obj = OCP(kind="node")
+
+        if not node_name:
+            # Get first worker node
+            nodes = ocp_obj.get(selector="node-role.kubernetes.io/worker")
+            if not nodes.get("items"):
+                raise ValueError("No worker nodes found in the cluster")
+            node_name = nodes["items"][0]["metadata"]["name"]
+
+        node = ocp_obj.get(resource_name=node_name)
+        addresses = node.get("status", {}).get("addresses", [])
+
+        for addr in addresses:
+            if addr.get("type") == "InternalIP":
+                private_ip = addr.get("address")
+                logger.info(f"Node {node_name} has private IP: {private_ip}")
+                return private_ip
+
+        raise ValueError(f"No InternalIP found for node {node_name}")
+
+    def setup_and_verify_network(self, nodeport=None):
+        """
+        Setup VPC peering, routing, security groups and verify network connectivity
+        from client cluster to management cluster.
+
+        Args:
+            nodeport (int): Optional NodePort to add to security group rules
+
+        Returns:
+            dict: Network setup result including peering, security group, and VPC info
+
+        Raises:
+            ConnectivityFail: If network connectivity verification fails
+            ValueError: If management cluster name is not configured or VPCs not found
+            ClientError: If AWS API calls fail
+        """
+        mgmt_cluster_name = config.ENV_DATA.get("cluster_name")
+        if not mgmt_cluster_name:
+            raise ValueError("Management cluster name not configured")
+
+        mgmt_vpc_id = self.get_mgmt_vpc_id()
+
+        instances = self.ec2_client.describe_instances(
+            Filters=[
+                {"Name": "vpc-id", "Values": [mgmt_vpc_id]},
+                {"Name": "instance-state-name", "Values": ["running"]},
+            ]
+        )
+        if not instances.get("Reservations"):
+            raise ValueError(
+                f"No running instances found in management VPC {mgmt_vpc_id}"
+            )
+
+        mgmt_instance_id = instances["Reservations"][0]["Instances"][0]["InstanceId"]
+
+        network_result = self.setup_network_for_client_cluster(
+            client_cluster_name=self.name,
+            mgmt_cluster_name=mgmt_cluster_name,
+            mgmt_instance_id=mgmt_instance_id,
+            nodeport=nodeport,
+        )
+
+        if not self.cluster_kubeconfig:
+            logger.warning(
+                f"Client cluster kubeconfig not available for '{self.name}', "
+                "skipping connectivity verification"
+            )
+            return network_result
+
+        try:
+            mgmt_node_ip = self.get_node_private_ip()
+        except (ValueError, CommandFailed) as e:
+            logger.warning(f"Could not get management node IP: {e}")
+            return network_result
+
+        if not self.verify_network_connectivity(target_ip=mgmt_node_ip, timeout=10):
+            raise ConnectivityFail(
+                f"Network connectivity from client cluster '{self.name}' "
+                f"to management node {mgmt_node_ip} failed"
+            )
+
+        logger.info(
+            f"Network setup and verification successful for '{self.name}':\n"
+            f"  VPC Peering: {network_result['pcx_id']}\n"
+            f"  Connectivity to {mgmt_node_ip}: VERIFIED"
+        )
+        return network_result
 
 
 class SpokeODF(SpokeOCP, ABC):

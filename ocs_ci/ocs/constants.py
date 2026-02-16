@@ -3818,3 +3818,13 @@ BLACKBOX_POD_LABEL = "app.kubernetes.io/name=odf-blackbox-exporter"
 
 # ODF 4.21 health overview mock alerts dir
 HEALTHALERTS_DIR = os.path.join(TEMPLATE_DIR, "health_overview_alerts")
+
+# CSI PORTS
+CEPH_NODE_PORT = 31659
+
+# Ceph network ports
+CEPH_MON_MSGR2_PORT = 3300  # Ceph Monitor (msgr2 protocol)
+CEPH_MON_LEGACY_PORT = 6789  # Ceph Monitor (legacy protocol)
+CEPH_EXPORTER_PORT = 9283  # Ceph Exporter (metrics)
+CEPH_OSD_PORT_MIN = 6800  # Ceph OSD port range start
+CEPH_OSD_PORT_MAX = 7300  # Ceph OSD port range end
