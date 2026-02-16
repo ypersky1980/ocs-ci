@@ -48,7 +48,12 @@ def get_storageclass() -> str:
     if customized_deployment_storage_class:
         storage_class = customized_deployment_storage_class
     else:
-        storage_class = DEFAULT_STORAGE_CLASS_MAP.get(platform)
+        if platform == constants.VSPHERE_PLATFORM and not config.ENV_DATA.get(
+            "use_custom_sc_in_deployment"
+        ):
+            storage_class = constants.THIN_CSI_STORAGECLASS
+        else:
+            storage_class = DEFAULT_STORAGE_CLASS_MAP.get(platform)
 
     logger.info(f"Using storage class: {storage_class}")
     return storage_class
